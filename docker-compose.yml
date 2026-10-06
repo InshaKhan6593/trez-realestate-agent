@@ -1,0 +1,10 @@
+# Local Redis for the per-lead lock, debounce sequence and the arq job queue.
+# Supabase runs separately: `npx supabase start`. Later this becomes Upstash;
+# only REDIS_URL changes.
+services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: trez-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped

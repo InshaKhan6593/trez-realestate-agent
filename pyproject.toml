@@ -4,14 +4,19 @@ version = "0.1.0"
 description = "WhatsApp lead agent for Trez Enterprises (see ARCHITECTURE.md)"
 requires-python = ">=3.12"
 dependencies = [
+    "arq>=0.28.0",
+    "fastapi>=0.142.2",
     "httpx>=0.28",
     "pillow>=11.0",
+    "psycopg-pool>=3.3.3",
     "psycopg[binary]>=3.2",
     "python-dotenv>=1.0",
+    "uvicorn[standard]>=0.54.0",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.13.1",
     "pytest>=8.3",
 ]
 
