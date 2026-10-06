@@ -167,7 +167,7 @@ def test_takeover_means_no_bot_reply(client):
     phone = _phone()
     _post(client, text_message(phone, f"wamid.{phone}.1", "price kam karo"))
     lead = _lead(phone)
-    _q("UPDATE leads SET takeover = true WHERE id = %s RETURNING id", lead)
+    _q("UPDATE leads SET handoff_state = 'taken' WHERE id = %s RETURNING id", lead)
     assert _turn(lead, _seq(lead)) == "takeover"
     assert _q("SELECT count(*) FROM messages WHERE lead_id = %s AND direction = 'out'", lead) == [(0,)]
 
@@ -222,3 +222,18 @@ def test_delivery_statuses_only_move_forward(client):
     assert status() == ("read", None)
     _post(client, status_update(out, "failed", {"code": 131047, "title": "Re-engagement message"}))
     assert status() == ("failed", "131047: Re-engagement message")
+
+
+def test_agent_taking_over_mid_turn_stops_the_bot_reply(client):
+    phone = _phone()
+    _post(client, text_message(phone, f"wamid.{phone}.1", "price kam ho sakti hai?"))
+    lead = _lead(phone)
+
+    def slow_reply(messages):
+        # While the draft is written, the agent takes the chat.
+        _q("UPDATE leads SET handoff_state = 'taken' WHERE id = %s RETURNING id", lead)
+        return "draft"
+
+    assert _turn(lead, _seq(lead), reply_fn=slow_reply) == "takeover"
+    assert _q("SELECT count(*) FROM messages WHERE lead_id = %s AND direction = 'out'", lead) == [(0,)]
+    assert _q("SELECT status, reply FROM turns WHERE lead_id = %s", lead) == [("takeover", "draft")]

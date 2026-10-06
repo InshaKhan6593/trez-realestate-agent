@@ -23,6 +23,9 @@ class Settings:
     whatsapp_api_version: str
     # How long to wait for more messages before answering a burst (§5: 6-8 s).
     debounce_seconds: float
+    # Supabase Storage holds listing photos (private bucket, service key).
+    supabase_url: str
+    supabase_service_role_key: str
 
     @property
     def dry_run(self) -> bool:
@@ -42,4 +45,6 @@ def get_settings() -> Settings:
         whatsapp_phone_number_id=env("WHATSAPP_PHONE_NUMBER_ID", ""),
         whatsapp_api_version=env("WHATSAPP_API_VERSION", "v23.0"),
         debounce_seconds=float(env("DEBOUNCE_SECONDS", "7")),
+        supabase_url=env("SUPABASE_URL", "http://127.0.0.1:54321"),
+        supabase_service_role_key=env("SUPABASE_SERVICE_ROLE_KEY", ""),
     )

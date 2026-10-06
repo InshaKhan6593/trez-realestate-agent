@@ -66,7 +66,7 @@ async def save_status(conn: AsyncConnection, st: Status) -> None:
 class Claimed:
     turn_id: int
     phone: str
-    takeover: bool
+    agent_has_it: bool         # handoff_state = 'taken': the agent is replying
     messages: list[dict]       # id, type, text, at — oldest first
     first_at: datetime
 
@@ -86,8 +86,8 @@ async def claim_turn(conn: AsyncConnection, lead_id: int) -> Claimed | None:
         )).fetchall()
         if not rows:
             return None
-        phone, takeover = (await (await conn.execute(
-            "SELECT phone, takeover FROM leads WHERE id = %s", (lead_id,)
+        phone, handoff_state = (await (await conn.execute(
+            "SELECT phone, handoff_state FROM leads WHERE id = %s", (lead_id,)
         )).fetchone())
         turn_id = (await (await conn.execute(
             "INSERT INTO turns (lead_id) VALUES (%s) RETURNING id", (lead_id,)
@@ -96,7 +96,14 @@ async def claim_turn(conn: AsyncConnection, lead_id: int) -> Claimed | None:
             "UPDATE messages SET turn_id = %s WHERE id = ANY(%s)", (turn_id, [r[0] for r in rows])
         )
     messages = [{"id": r[0], "type": r[1], "text": r[2], "at": r[3]} for r in rows]
-    return Claimed(turn_id, phone, takeover, messages, messages[0]["at"])
+    return Claimed(turn_id, phone, handoff_state == "taken", messages, messages[0]["at"])
+
+
+async def agent_has_taken(conn: AsyncConnection, lead_id: int) -> bool:
+    row = await (await conn.execute(
+        "SELECT handoff_state = 'taken' FROM leads WHERE id = %s", (lead_id,)
+    )).fetchone()
+    return bool(row and row[0])
 
 
 async def release_turn(conn: AsyncConnection, turn_id: int) -> None:

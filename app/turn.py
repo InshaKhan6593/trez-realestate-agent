@@ -3,10 +3,11 @@
     seq moved on?          -> stale: a newer job will answer the whole burst
     lead locked?           -> locked: retry shortly
     claim unanswered msgs  -> nothing to answer? done
-    takeover?              -> log only, the agent is replying by hand
+    agent has taken it?    -> log only, the agent is replying by hand
     build reply
     seq moved on now?      -> superseded: hand the messages back, the newer job
                               answers everything (§5: discard draft, regenerate)
+    agent took it now?     -> takeover: draft kept for the record, never sent
     send + persist
 """
 
@@ -43,7 +44,7 @@ async def run_turn(redis: Redis, pool: AsyncConnectionPool, settings: Settings,
             claimed = await store.claim_turn(conn, lead_id)
             if claimed is None:
                 return "nothing"
-            if claimed.takeover:
+            if claimed.agent_has_it:
                 await store.finish_turn(conn, claimed.turn_id, "takeover")
                 return "takeover"
 
@@ -57,6 +58,11 @@ async def run_turn(redis: Redis, pool: AsyncConnectionPool, settings: Settings,
             if await inbox.current_seq(redis, lead_id) != seq:
                 await store.release_turn(conn, claimed.turn_id)
                 return "superseded"
+            # The agent may have taken the chat while the draft was written:
+            # never let the bot and the agent both answer.
+            if await store.agent_has_taken(conn, lead_id):
+                await store.finish_turn(conn, claimed.turn_id, "takeover", reply=text)
+                return "takeover"
 
             result = await send_fn(settings, claimed.phone, text)
             now = datetime.now(timezone.utc)
