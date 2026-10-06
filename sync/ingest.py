@@ -66,6 +66,40 @@ def upload_photos(snap: Snapshot, url: str, key: str) -> tuple[dict, list[str]]:
     return sizes, missing
 
 
+def prune_photos(referenced: set[str], url: str, key: str) -> int:
+    """Delete bucket photos no listing references any more (e.g. a photo the
+    agent removed, or one replaced by a different size or format). Photos of
+    listings that went missing stay: their listing_media rows still point at
+    them. -> number deleted."""
+    headers = {"Authorization": f"Bearer {key}", "apikey": key}
+    with httpx.Client(base_url=f"{url}/storage/v1", headers=headers, timeout=60) as client:
+        orphans = sorted(_list_bucket(client) - referenced)
+        for i in range(0, len(orphans), 100):
+            resp = client.request("DELETE", f"/object/{BUCKET}",
+                                  json={"prefixes": orphans[i:i + 100]})
+            resp.raise_for_status()
+    return len(orphans)
+
+
+def prune_media_store(snap: Snapshot, raw_root: Path) -> int:
+    """Delete files in the photo pool that no snapshot under data/raw uses any
+    more (e.g. after a snapshot is archived). -> number deleted."""
+    stores = {path.parent for path in snap.photo_paths.values()}
+    used: set[Path] = set()
+    for listings_json in raw_root.glob("*/listings.json"):
+        for record in json.loads(listings_json.read_text("utf-8")):
+            for media in record.get("downloadedMedia") or []:
+                if media.get("localFile"):
+                    used.add((listings_json.parent / media["localFile"]).resolve())
+    removed = 0
+    for store in stores:
+        for path in store.iterdir():
+            if path.is_file() and path.resolve() not in used:
+                path.unlink()
+                removed += 1
+    return removed
+
+
 def _list_bucket(client: httpx.Client, page: int = 1000) -> set[str]:
     names: set[str] = set()
     offset = 0
@@ -243,6 +277,13 @@ def ingest(raw_dir: Path) -> dict:
         run_id = write_plan(cur, snap, plan, sizes)
         conn.commit()
 
+        # Only after the commit, so the references reflect the new state.
+        referenced = {r[0] for r in cur.execute("SELECT storage_path FROM listing_media")}
+        pruned = prune_photos(
+            referenced, os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+        )
+    pruned_files = prune_media_store(snap, raw_dir.parent)
+
     return {
         "run_id": run_id,
         "snapshot": snap.name,
@@ -251,6 +292,8 @@ def ingest(raw_dir: Path) -> dict:
         "locations": len(snap.locations),
         "photos": len(sizes),
         "photos_missing_on_disk": len(missing),
+        "stale_photos_removed": pruned,
+        "stale_photo_files_removed": pruned_files,
         "unusable": list(snap.unusable),
         # Zameen categories not in parse.PROPERTY_TYPES yet: stored as "other".
         "unmapped_property_types": list(snap.unmapped_types),

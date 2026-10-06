@@ -13,7 +13,7 @@ from sync.diff import Current, plan_sync
 from sync.snapshot import load_snapshot
 
 DATA = Path(__file__).resolve().parent.parent / "data"
-SNAP = DATA / "raw" / "2026-10-06T1600"
+SNAP = DATA / "raw" / "2026-10-06T1730"
 ARCHIVED = DATA / "archive" / "raw-before-structured-capture" / "2026-10-06"
 
 pytestmark = pytest.mark.skipif(

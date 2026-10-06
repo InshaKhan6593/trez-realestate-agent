@@ -58,7 +58,8 @@ handle it. On the Linux server plain `uvicorn app.webhook:app` is fine.
 ## Status
 Design complete (2026-10-06). Built: Zameen scraper (structured data only); data layer (listings
 with coordinates, amenities, installment plans, Zameen's full object; locations; photos;
-`listing_events`; 2-miss rule; history starts at snapshot 2026-10-06T1600); WhatsApp plumbing (signed webhook, dedupe, debounce, per-lead lock,
+`listing_events`; 2-miss rule; stale photos pruned on every ingest; history starts at snapshot
+2026-10-06T1730); WhatsApp plumbing (signed webhook, dedupe, debounce, per-lead lock,
 takeover, delivery statuses, dry-run sending). The reply is a placeholder; no real number connected.
 Not built: listings step 2 extras (Sheet sync, `#sold` commands), the turn pipeline, Langfuse/Sentry.
 The location alias table is out of scope for now.
