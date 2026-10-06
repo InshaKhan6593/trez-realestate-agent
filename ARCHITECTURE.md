@@ -7,12 +7,14 @@
 > Client: **Trez Enterprises**, Karachi (Zameen agent_id 200295, ~75 listings, sizes in Sq. Yd).
 > Examples below that use Lahore areas or marla are illustrative.
 >
-> Status: **design complete; Zameen scraper built (`scraper/`)** · Last updated: 2026-10-06
+> Status: **scraper, data layer, WhatsApp plumbing and Phase 1 of the agent built and tested** (see §0) ·
+> Last updated: 2026-10-06
 
 ---
 
 ## Table of contents
 
+0. [Implementation status and changes to the design](#0-implementation-status-and-changes-to-the-design)
 1. [The problem](#1-the-problem)
 2. [What we automate](#2-what-we-automate)
 3. [How Zameen leads arrive](#3-how-zameen-leads-arrive)
@@ -32,6 +34,47 @@
 17. [Build order](#17-build-order)
 18. [Open questions / to verify](#18-open-questions--to-verify)
 19. [Sources](#19-sources)
+
+---
+
+## 0. Implementation status and changes to the design
+
+The sections after this one are the original design. This section says what is built and **where the
+build deliberately differs**, with the reason. When they disagree, this section and the code win; the
+migrations in `supabase/migrations/` are the source of truth for the schema.
+
+### Built and tested (2026-10-06)
+| Part | Where | Notes |
+|---|---|---|
+| Zameen scraper + validator | `scraper/` | Structured data only; complete-run proof; field-change warnings |
+| Data layer | `sync/`, migrations | Listings with Zameen's full object, coordinates, amenities, installment plans; `listing_events`; 2-miss rule; photos in Storage; stale-photo pruning |
+| WhatsApp plumbing | `app/` | Signed webhook, dedupe, debounce, per-lead lock, delivery statuses, dry-run sending |
+| Agent, Phase 1 | `agent/` | Extractor → planner → tools → responder → validator in LangGraph; memory in Postgres; handoff with full context |
+| Live testing tool | `scripts/chat.py` | Talk to the agent as a buyer with the real model |
+
+**Phase 1 scope (agreed with the client side):** answer listing questions from data; qualify one question
+at a time with memory across turns; suggest listings; location hierarchy; photos and video links;
+human handoff with full context. **Out for now:** visit booking, comparing listings, saved searches, FAQ
+(anything not in the data is handed to the agent, never guessed).
+
+### Changes to the design, and why
+| Design said | Built | Why |
+|---|---|---|
+| Haiku (extractor) + Sonnet (responder) | **Any model via OpenRouter**, set in `.env` per role (currently `deepseek/deepseek-v4-flash-vision-exp`, reasoning off) | The user chooses and tests models. Live: reasoning on took 12-21 s per extraction and once misread a message; off: 2-3 s, same answers. Replies take 3-5 s and cost < $0.001 |
+| Read listings from the page | **Only Zameen's structured page data** (`window.state`), whole object kept | Page text rounded prices and sizes, cut descriptions, padded results with other agencies' cards and once attached a non-listing photo. Structured data cannot be misread, and a format change stops the run loudly |
+| `area_aliases` table + normalisation (§6, §12) | **No alias table.** The extractor picks a place from the real list of Zameen place names by id; a conservative fuzzy match is only a typo backup | No hand-written aliases to maintain; the model understands "Askari V", "malir cantt" |
+| Relax area to "nearby phase" (§12 Case 3) | **Climb Zameen's tree one level at a time**: exact place (with everything under it), else the first level up that has matches, closest first, naming the level and each distance | The client's rule. Places containing all stock (Pakistan, Sindh) are not offered to the model, a named place not in the tree is never swapped for a broader one, and a new place drops the old one |
+| `takeover` on/off | **Handoff states** `none` / `requested` / `taken` | Marking a lead hot alerts the agent but the bot keeps serving (facts only, no questions, no negotiation) until the agent actually takes over; it re-checks right before sending. Agent-to-agent reassign keeps the chain |
+| Validator checks prices and MUSTs (§9) | Also checks claims the responder **declares**: listings called available, "we have none", "our agent will contact you", unanswered questions | Live runs showed the model inventing "we have no flats here" and "the agent will send photos". Unanswered questions go to the agent |
+| Buy/rent from the extractor | **Purpose counts only when the buyer states it**; until then a stock preview (counts for sale and rent, no prices) | The model guessed "buy" from "flat chahiye" |
+| Memory then alert | **Memory is committed before the handoff alert is built** | Otherwise the alert missed the very listing being negotiated |
+| Rent is monthly | **Rent frequency as Zameen states it**, else unknown | Zameen leaves it empty; never assumed |
+| WhatsApp photos | **Converted to JPEG** when needed | Zameen serves WebP; WhatsApp images accept only JPEG/PNG |
+
+### Not built yet
+Real WhatsApp number (Meta token) · Trez's agents in `agents` (handoff alerts need them) · agent
+commands (`#take`, `#release`, `#sold`) · episode summaries for returning buyers (change reports on
+return already work) · voice notes · follow-ups · Sheet sync · Langfuse / Sentry · dashboard · hosted deploy.
 
 ---
 
@@ -145,14 +188,14 @@ context from the DB, decide, reply, save. A reply 3 seconds or 3 days later goes
                                ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │ 5. TURN PIPELINE  (LangGraph)                                        │
-│  a) EXTRACTOR  (Haiku, structured) → intents[], slot updates,        │
+│  a) EXTRACTOR  (LLM, structured) → intents[], slot updates,          │
 │     listing refs, answers to open questions, buying signals          │
 │  b) PLANNER    (plain Python) → what to answer, which tools, next    │
 │     question, handoff?, score update, merge re-entry directives      │
 │  c) TOOLS      (run in parallel) resolve_listing · search_listings · │
 │     get_listing · faq_search · book_visit · schedule_followup ·      │
 │     handoff                                                          │
-│  d) RESPONDER  (Sonnet) → ONE WhatsApp reply                         │
+│  d) RESPONDER  (LLM) → ONE WhatsApp reply                            │
 │  e) VALIDATOR  (code) → MUST directives covered, every price/size/   │
 │     status matches tool output → else regenerate → else template     │
 └──────────────────────────────┬───────────────────────────────────────┘
@@ -189,6 +232,9 @@ Side services
 
 ## 6. Data model
 
+> Original design. The built schema is in `supabase/migrations/` (§0): no `area_aliases`; added `agents`,
+> `handoffs`, `ingest_runs`, `locations` (Zameen tree), `listing_media`, and Zameen's full object per listing.
+
 ```
 leads           id, phone, name, language, stage, fit_score, intent_score, priority,
                 last_inbound_at, last_outbound_at, takeover(bool), created_at
@@ -220,7 +266,7 @@ listing_events  id, listing_id, type(new|price_changed|details_changed|status_ch
                 missing_from_portal), old(jsonb), new(jsonb),
                 source(sheet|agent_cmd|zameen_scrape|agent_verify|echo), at
 
-area_aliases    alias → canonical   ("ph 6", "phase vi", "ph-6" → "DHA Phase 6")
+area_aliases    (not built: places are chosen from the Zameen tree by id, §0)
 saved_searches  lead_id, filters(jsonb), active, created_at
 followups       lead_id, type, run_at, status
 visits          lead_id, listing_id, slot_at, status(tentative|confirmed|done|no_show|cancelled)
@@ -559,7 +605,7 @@ Link → ID → direct lookup. Screenshot → vision reads title, price and loca
 ```
 resolve_listing(reference, lead_id):
   1. Look in THIS lead's history (lead_listings) first
-  2. Extract attributes, normalize with area_aliases
+  2. Extract attributes; places by id from the real place list (no alias table, §0)
   3. SQL filter → candidates
   4. 1 → confirm with a photo card · 2–3 → WhatsApp list message · 0 → Case 3
 ```
@@ -573,7 +619,8 @@ Never guess silently.
    price, size, one line on why it fits, and buttons `Visit book karein` · `Aur details` · `Pasand nahi`.
 4. **Learn from reactions:** "bohat door hai" → deal breaker; "thora bara chahiye" → raise the minimum size;
    "acha hai lekin mehenga" → similar features, lower price.
-5. **Relax filters one step at a time and tell the buyer what changed:** nearby phase → size ±1 marla → budget +10% → type.
+5. **Relax filters one step at a time and tell the buyer what changed:** area first, by climbing Zameen's location tree one
+   level at a time (built, §0: the first level with matches, closest first, with distances) → size → budget +10% → type.
 6. **Nothing found → saved search** → template alert when a match is listed.
 
 ### Local terms glossary
@@ -608,8 +655,8 @@ everyone else goes into a 9am morning digest.
 | Database | **Supabase (Postgres)** | Relational data + pgvector (FAQ) + Storage (voice/media) + Auth (dashboard) + Realtime + pg_cron |
 | Cache, locks, debounce | **Upstash Redis** | Per-lead lock, debounce, turn_seq, listing cache. Free tier is enough |
 | Bot backend | **Python FastAPI + arq worker** | Webhook, queue, LangGraph pipeline, scheduler, scraper |
-| Agent framework | **LangGraph** (or a plain Claude tool loop) | Fits the stage machine |
-| LLMs | **Sonnet 5.5** (responder), **Haiku 4.5** (extractor/classifier) | |
+| Agent framework | **LangGraph** | Fits the stage machine; state per turn only |
+| LLMs | **Via OpenRouter**, model per role in `.env` (now `deepseek/deepseek-v4-flash-vision-exp`) | The user picks and tests models; no provider lock-in (§0) |
 | STT | ElevenLabs Scribe / Whisper | Benchmark on Urdu voice notes |
 | WhatsApp | Meta Cloud API (coexistence) or a reseller like 360dialog | |
 | Dashboard | **Next.js on Vercel** | Leads, conversation timeline, takeover, inventory, traces |
@@ -651,10 +698,10 @@ Session: lead_77 (Ahmed)        tags: episode=3, stage=shortlisted, reentry=true
    │                          transcript="rehne ke liye, cash hai..." conf=0.91 1.3s
    ├─ span: reentry           findings=[#48213 SOLD] stale=[budget,timeline]
    │                          directives=[MUST report_gone, SHOULD confirm_budget]
-   ├─ generation: extractor   (haiku) input/output JSON, tokens, 0.6s
+   ├─ generation: extractor   (model) input/output JSON, tokens, 0.6s
    ├─ span: planner           plan={...} handoff=false
    ├─ span: tool.search_listings  args={10M, DHA Ph5/6, ≤4cr} → [48510, 48522]
-   ├─ generation: responder   (sonnet) prompt + reply, 1.9s
+   ├─ generation: responder   (model) prompt + reply, 1.9s
    ├─ span: validator         PASS (musts 2/2, prices verified)
    └─ span: send              wa_msg_id=..., sent→delivered→read
 ```
@@ -691,12 +738,12 @@ Time to first reply (< 1 min) · % qualified · visits booked per 100 leads · h
 
 ## 17. Build order
 
-1. **Plumbing:** FastAPI webhook, signature check, dedupe, queue, per-lead lock, debounce, persistence, Supabase schema.
-2. **Listings:** Sheet sync, `listings` + `area_aliases`, exact resolver, `#sold` agent commands.
-3. **Turn pipeline:** extractor (Pydantic schemas) → planner → tools → responder → validator; slots and open questions.
-   → **MVP demo point** (instant reply + qualification + handoff).
-4. **Re-entry:** episodes, slot shelf life, listing change detection, playbook, briefing (+ pytest per stage).
-5. **Zameen sync module:** scraper, normalizer, diff, `listing_events`, cache clearing, `lead_notices` (test with saved HTML pages).
+1. **Plumbing:** FastAPI webhook, signature check, dedupe, queue, per-lead lock, debounce, persistence, Supabase schema. ✅
+2. **Listings:** `listings` + location tree ✅, exact resolver ✅; Sheet sync and `#sold` agent commands ⬜.
+3. **Turn pipeline:** extractor (Pydantic schemas) → planner → tools → responder → validator; slots and open questions. ✅
+   Built as Phase 1 of the agent without cutting scope (see §0).
+4. **Re-entry:** listing change detection on return ✅; episode summaries, slot shelf life, stage playbook ⬜.
+5. **Zameen sync module:** scraper, diff, `listing_events` ✅; cache clearing, `lead_notices` ⬜.
 6. **Discovery mode:** cards, buttons, learning from reactions, relaxing filters, saved searches.
 7. **Scheduler:** follow-ups, visit reminders, verification loop; handoff dashboard (Next.js).
 8. **Observability:** Langfuse traces, `turns` table, Sentry, nightly evals.
@@ -708,11 +755,14 @@ Time to first reply (< 1 min) · % qualified · visits booked per 100 leads · h
 - [ ] Does Zameen's WhatsApp button prefill the listing link or ID? Check on the client's listings.
 - [ ] Is WhatsApp **coexistence** available for the client's number in Pakistan, and do app echoes reach the webhook?
 - [ ] Current Meta pricing for Pakistan after 1 Oct 2026 (are service and utility replies still free in the window?).
-- [ ] Zameen `robots.txt` / terms for scraping the client's own agency page. Is a Zameen Pro export available?
+- [x] Zameen `robots.txt` allows the agency search pages (checked on every run). Still open: terms of use, and whether a
+  Zameen Pro export is available as a second source.
 - [ ] Where does the client keep inventory today (Sheet / Zameen Pro / notebook)?
 - [ ] Client's working hours, visit slots, handoff channel (WhatsApp group vs dashboard).
 - [ ] STT benchmark: ElevenLabs Scribe vs Whisper on real Urdu voice notes.
-- [ ] Supabase / Vercel / Upstash current free-tier limits.
+- [x] Supabase free plan: 500 MB database, 1 GB storage, 5 GB egress; pauses after a week idle (checked 2026-10-06).
+- [x] WhatsApp image messages accept only JPEG/PNG (5 MB); WebP only as stickers: photos are converted.
+- [ ] Trez's agents (names, WhatsApp numbers) for handoff alerts; target response time; night-time rule.
 
 ---
 
@@ -730,3 +780,6 @@ Time to first reply (< 1 min) · % qualified · visits booked per 100 leads · h
 - YCloud – April 2026 pricing change: https://www.ycloud.com/blog/whatsapp-api-message-pricing-update-effective-april-1-2026
 - Zameen Help – Manage leads: https://help.zameen.com/hc/en-us/articles/5643846609821-How-to-manage-edit-and-add-new-leads
 - WATI – WhatsApp for real estate: https://www.wati.io/industries/real-estate/
+- Redis – The state of context engineering (2026 report): survey; navigable, fast, fresh, compounding context
+- Meta – WhatsApp Cloud API supported media: https://developers.facebook.com/documentation/business-messaging/whatsapp/business-phone-numbers/media
+- Supabase pricing: https://supabase.com/pricing

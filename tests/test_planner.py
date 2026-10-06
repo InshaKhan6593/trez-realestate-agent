@@ -35,7 +35,6 @@ def test_stated_replaces_inferred_and_late_answers_close_open_questions():
                       open_questions=["budget_max"])
     p = plan(state, ext("other", slots=[("budget_max", 30_000_000, "stated", 1.0)]))
     assert p.slot_updates["budget_max"]["source"] == "stated"
-    assert p.answered_questions == ["budget_max"]
 
 
 # --- questions ----------------------------------------------------------------
@@ -69,7 +68,7 @@ def test_quiet_when_not_interested():
 # --- search -------------------------------------------------------------------
 
 def test_search_uses_everything_known_and_skips_rejected_listings():
-    rejected = KnownListing(7, 111, "rejected", None, None, 1, "available", NOW)
+    rejected = KnownListing(7, 111, "rejected", None, None, 1, "available")
     state = LeadState(1, slots={"purpose": stated("sale"), "property_types": stated(["flat"])},
                       listings=[rejected])
     p = plan(state, ext("search", slots=[("location_id", 17289, "stated", 1.0),
@@ -88,11 +87,11 @@ def test_unknown_place_name_goes_to_the_location_finder():
 
 def test_a_link_is_looked_up_and_photos_requested():
     p = plan(LeadState(1), ext({"type": "photos", "listing": {"zameen_id": 54467403}}))
-    assert p.listing_refs == [{"zameen_id": 54467403}] and p.want_photos and p.want_details
+    assert p.listing_refs == [{"zameen_id": 54467403}] and p.want_photos
 
 
 def test_a_question_without_a_reference_means_the_listing_being_discussed():
-    known = KnownListing(5, 54467403, "inquired", 8_500_000, "available", 8_500_000, "available", NOW)
+    known = KnownListing(5, 54467403, "inquired", 8_500_000, "available", 8_500_000, "available")
     p = plan(LeadState(1, listings=[known]), ext({"type": "listing_question", "topic": "parking"}))
     assert p.listing_refs == [{"current": True}]
 
@@ -100,9 +99,9 @@ def test_a_question_without_a_reference_means_the_listing_being_discussed():
 # --- returning buyers ---------------------------------------------------------
 
 def test_returning_buyer_hears_what_changed_first():
-    sold = KnownListing(5, 1, "liked", 80_000_000, "available", 80_000_000, "sold", NOW)
-    cheaper = KnownListing(6, 2, "shown", 90_000_000, "available", 85_000_000, "available", NOW)
-    stale = KnownListing(7, 3, "shown", 70_000_000, "available", 70_000_000, "unverified", NOW)
+    sold = KnownListing(5, 1, "liked", 80_000_000, "available", 80_000_000, "sold")
+    cheaper = KnownListing(6, 2, "shown", 90_000_000, "available", 85_000_000, "available")
+    stale = KnownListing(7, 3, "shown", 70_000_000, "available", 70_000_000, "unverified")
     state = LeadState(1, listings=[sold, cheaper, stale], hours_since_last_message=48)
     must = plan(state, ext("greeting")).must
     assert {"kind": "listing_gone", "listing_id": 5, "status": "sold"} in must
@@ -111,7 +110,7 @@ def test_returning_buyer_hears_what_changed_first():
 
 
 def test_no_change_report_within_the_same_sitting():
-    sold = KnownListing(5, 1, "liked", 80_000_000, "available", 80_000_000, "sold", NOW)
+    sold = KnownListing(5, 1, "liked", 80_000_000, "available", 80_000_000, "sold")
     assert plan(LeadState(1, listings=[sold], hours_since_last_message=1), ext("greeting")).must == []
 
 

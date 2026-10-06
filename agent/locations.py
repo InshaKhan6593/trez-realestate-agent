@@ -49,19 +49,6 @@ class Tree:
         names = [self.places[i].name for i in reversed(place.path) if i in self.places]
         return ", ".join(names[: max(1, len(names) - 2)])
 
-    def common_depth(self, a: int, b: int) -> int:
-        """How deep the two places' nearest shared ancestor is (higher = closer)."""
-        pa, pb = self.places[a].path, self.places[b].path
-        n = 0
-        for x, y in zip(pa, pb):
-            if x != y:
-                break
-            n += 1
-        return n - 1
-
-    def leaves_under(self, place_id: int) -> list[int]:
-        return [p.id for p in self.places.values() if place_id in p.path]
-
 
 async def load_tree(conn: AsyncConnection) -> Tree:
     rows = await (await conn.execute(
@@ -120,11 +107,11 @@ async def place_choices(conn: AsyncConnection) -> list[dict]:
     Sindh above Karachi) are left out: choosing one says nothing, and a model
     that cannot find "Bahria Town" must not fall back to "Pakistan"."""
     tree = await load_tree(conn)
-    stock = dict((await (await conn.execute(
+    stock = dict(await (await conn.execute(
         """SELECT l.id, count(x.id) FROM locations l
            LEFT JOIN listings x ON x.location_id IN
                 (SELECT d.id FROM locations d WHERE d.path @> ARRAY[l.id])
-           GROUP BY l.id""")).fetchall()))
+           GROUP BY l.id""")).fetchall())
     total = max(stock.values(), default=0)
     covering = [p for p in tree.places.values() if stock.get(p.id) == total]
     deepest = max(covering, key=lambda p: p.depth, default=None)

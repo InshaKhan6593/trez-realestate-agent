@@ -1,8 +1,13 @@
 """Webhook signature and payload parsing. Pure: no network."""
 
 from app.meta import parse_webhook, signature_ok
-
-from tests.meta_payloads import APP_SECRET, envelope, signed, status_update, text_message
+from tests.meta_payloads import (
+    APP_SECRET,
+    envelope,
+    signed,
+    status_update,
+    text_message,
+)
 
 
 def test_valid_signature():

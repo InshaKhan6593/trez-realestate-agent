@@ -92,12 +92,6 @@ class LLM:
             raise LLMError(f"OpenRouter returned no choices: {str(body)[:400]}")
         return body
 
-    async def text(self, role: str, messages: list[dict], usage: Usage, **extra) -> str:
-        model = model_for(role)
-        body = await self._chat(model, messages, **{**options_for(role), **extra})
-        usage.add(role, model, body)
-        return (body["choices"][0]["message"].get("content") or "").strip()
-
     async def structured(self, role: str, messages: list[dict], schema: type[T], usage: Usage) -> T:
         model = model_for(role)
         opts = options_for(role)

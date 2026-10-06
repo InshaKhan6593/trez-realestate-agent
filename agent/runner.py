@@ -43,7 +43,7 @@ def _log(facts: Facts, name: str, args: dict, result) -> None:
     facts.tool_calls.append({"tool": name, "args": args, "result": result})
 
 
-async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, burst_text: str) -> Facts:
+async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan) -> Facts:
     facts = Facts()
 
     # Place: a name the extractor could not map to an id.

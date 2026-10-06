@@ -17,7 +17,6 @@ Rules (ARCHITECTURE.md §7, §9 and the Phase 1 scope):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 
 from .schemas import Extraction
 
@@ -43,7 +42,6 @@ class KnownListing:
     status_shown: str | None
     price_now: int
     availability_now: str
-    last_at: datetime
 
 
 @dataclass
@@ -61,9 +59,7 @@ class LeadState:
 class Plan:
     slot_updates: dict[str, dict] = field(default_factory=dict)
     clear_slots: list[str] = field(default_factory=list)       # e.g. an old place, replaced
-    answered_questions: list[str] = field(default_factory=list)
     listing_refs: list[dict] = field(default_factory=list)    # {"zameen_id"} or {"history": text} or {"current": True}
-    want_details: bool = False
     want_photos: bool = False
     want_video: bool = False
     search: dict | None = None                               # Criteria fields, from slots
@@ -134,7 +130,6 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
     p = Plan()
     p.slot_updates = merge_slots(state.slots, ext)
     slots = {**state.slots, **p.slot_updates}
-    p.answered_questions = [q for q in state.open_questions if q in p.slot_updates]
     p.returning = (state.hours_since_last_message or 0) >= RETURNING_AFTER_HOURS
     p.greet = state.hours_since_last_message is None or any(i.type == "greeting" for i in ext.intents)
     types = {i.type for i in ext.intents}
@@ -164,7 +159,6 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
     if not p.listing_refs and state.listings and any(i.type in listing_intents for i in ext.intents):
         p.listing_refs.append({"current": True})
     p.listing_refs = [dict(t) for t in {tuple(sorted(r.items())) for r in p.listing_refs}]
-    p.want_details = bool(types & {"listing_question", "availability"}) or bool(p.listing_refs)
     p.want_photos = "photos" in types
     p.want_video = "video" in types
     p.reject = [r.model_dump(exclude_none=True) for r in ext.rejected]

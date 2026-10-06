@@ -76,7 +76,7 @@ async def run_turn(redis: Redis, pool: AsyncConnectionPool, settings: Settings,
 
             if result.status != "failed" and media_fn and getattr(reply, "media_listing_id", None):
                 for sent in await media_fn(conn, settings, claimed.phone, reply.media_listing_id,
-                                           photos=4 if reply.photos else 0, videos=reply.video):
+                                           photos=None if reply.photos else 0, videos=reply.video):
                     await store.save_outbound(
                         conn, lead_id, claimed.turn_id, sent.ref, sent.result.wa_message_id,
                         sent.result.status, sent.result.error, datetime.now(timezone.utc),

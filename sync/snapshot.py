@@ -7,7 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .parse import PROPERTY_TYPES, Listing, Location, Unusable, location_chain, parse_listing
+from .parse import (
+    PROPERTY_TYPES,
+    Listing,
+    Location,
+    Unusable,
+    location_chain,
+    parse_listing,
+)
 
 
 @dataclass(frozen=True)

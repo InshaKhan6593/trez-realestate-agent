@@ -48,10 +48,12 @@ class MediaSent:
 
 
 async def send_listing_media(conn: AsyncConnection, settings: Settings, to: str, listing_id: int,
-                             *, photos: int = DEFAULT_PHOTOS, videos: bool = True,
+                             *, photos: int | None = None, videos: bool = True,
                              skip_photos: int = 0) -> list[MediaSent]:
-    """Send up to `photos` photos in gallery order (after `skip_photos` already
-    sent), then the listing's video links. The caller records the messages."""
+    """Send up to `photos` photos (DEFAULT_PHOTOS if None) in gallery order,
+    after `skip_photos` already sent, then the listing's video links. The
+    caller records the messages."""
+    photos = DEFAULT_PHOTOS if photos is None else photos
     rows = await (await conn.execute(
         """SELECT asset_id, storage_path, meta_media_id, meta_uploaded_at
            FROM listing_media WHERE listing_id = %s ORDER BY seq OFFSET %s LIMIT %s""",

@@ -77,7 +77,7 @@ def lead():
         _cleanup(conn)
         agents = [conn.execute("INSERT INTO agents (name, phone) VALUES (%s, %s) RETURNING id",
                                (name, phone)).fetchone()[0]
-                  for name, phone in zip(("Fahad", "Sana"), AGENT_PHONES)]
+                  for name, phone in zip(("Fahad", "Sana"), AGENT_PHONES, strict=True)]
         lead_id = conn.execute(
             "INSERT INTO leads (phone, name, priority) VALUES (%s, 'Ahmed', 'hot') RETURNING id",
             (TEST_PHONE,)).fetchone()[0]

@@ -44,10 +44,10 @@ async def load_context(conn: AsyncConnection, lead_id: int, burst_ids: list[int]
         (lead_id,))).fetchall()]
     listings = [
         KnownListing(r["listing_id"], r["zameen_id"], r["relation"], r["price_shown"], r["status_shown"],
-                     r["price_pkr"], availability(r["status"], r["last_verified_at"], now), r["last_at"])
+                     r["price_pkr"], availability(r["status"], r["last_verified_at"], now))
         for r in await (await cur.execute(
             """SELECT ll.listing_id, l.zameen_id, ll.relation, ll.price_shown, ll.status_shown,
-                      l.price_pkr, l.status, l.last_verified_at, ll.last_at
+                      l.price_pkr, l.status, l.last_verified_at
                FROM lead_listings ll JOIN listings l ON l.id = ll.listing_id
                WHERE ll.lead_id = %s ORDER BY ll.last_at DESC""", (lead_id,))).fetchall()
     ]

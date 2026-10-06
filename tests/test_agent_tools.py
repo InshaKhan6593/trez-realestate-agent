@@ -12,7 +12,13 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 import pytest
 
-from agent.listings import Criteria, availability, get_listing, resolve_listing, search_listings
+from agent.listings import (
+    Criteria,
+    availability,
+    get_listing,
+    resolve_listing,
+    search_listings,
+)
 from agent.locations import decide, find_location, place_choices
 
 DB_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")

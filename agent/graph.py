@@ -106,7 +106,7 @@ async def n_plan(state: TurnState, config) -> TurnState:
 async def n_tools(state: TurnState, config) -> TurnState:
     conn, _ = _deps(config)
     p, ctx = state["plan"], state["ctx"]
-    facts = await run_tools(conn, ctx.state, p, " ".join(m["text"] or "" for m in ctx.burst))
+    facts = await run_tools(conn, ctx.state, p)
     if facts.search is not None:
         apply_scores(p, ctx.state, state["ext"], facts.search["total"])
     return {"facts": facts, "plan": p}
