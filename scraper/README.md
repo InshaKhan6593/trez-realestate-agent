@@ -21,7 +21,7 @@ node validate-zameen-data.mjs --input-dir ../data/raw/$(date +%Y-%m-%d) \
 
 ```
 data/                          git-ignored: third-party content + client inventory
-  media-store/<assetId>.jpeg   shared photo pool, reused by every run
+  media-store/<assetId>-800x1200.jpeg   shared photo pool, reused by every run
   raw/<date>/
     listings.json              every verified listing
     listings/<id>.json         one file per listing (same records)
@@ -58,5 +58,7 @@ that a listing has gone.
 | When the agency's results run out, Zameen fills the same list with "Discover more properties" from other agencies (23 of 25 cards on the rentals page) | Stops at that heading |
 | The agency search can leave out a live listing: 54550059 was live, by Trez, PKR 10 Crore, yet missing from search (profile said 73 for sale, search returned 72) | Nothing here; the diff step must treat a single absence as "maybe", not "sold" (2 consecutive misses → ask the agent) |
 | The results counter is hidden at some viewport widths | Read with `textContent`, not `innerText` |
+| The rentals page shows no counter unless the URL has `types=all&property_status=available` | Start URL uses the same params as Zameen's own "View All" link |
+| The gallery lazy-loads, so 73% of images on the page were 120x90 strip thumbnails | Every image is requested at `800x1200` (Zameen's largest; other sizes return 403); files are named `<id>-800x1200.jpeg`; the validator rejects any other size |
 | Price text runs into the next field: `"PKR 11 Crore Bath(s) 4"` | Raw string is kept beside the parsed amount; re-derive from the raw string downstream |
 | About a third of listings changed between 3 Sep and 6 Oct (8 gone, 25 new, 5 price changes) | Scrape at least daily |

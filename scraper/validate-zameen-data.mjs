@@ -170,6 +170,9 @@ async function main() {
           )
         ) {
           errors.push(`${label}: non-gallery media was included`);
+        } else if (!/-800x1200\.[a-z]+$/i.test(parsed.pathname)) {
+          // 120x90 strip thumbnails once made up 73% of the photos.
+          errors.push(`${label}: photo is not full size (800x1200): ${media.url}`);
         }
       } catch {
         errors.push(`${label}: invalid media URL`);

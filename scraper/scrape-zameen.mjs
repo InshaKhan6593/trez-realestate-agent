@@ -233,9 +233,12 @@ function extractBreadcrumbLocations(structuredData) {
   return unique(names);
 }
 
+// Short descriptions have no "Read More" button and run straight into the next
+// heading. Requiring "Read More" made 32 of 74 listings fall back to the
+// 160-character meta summary on 2026-10-06.
 function extractDescription(pageText, metaDescription) {
   const match = pageText.match(
-    /\bDescription\s+([\s\S]*?)\s+Read More\s+(?:Location & Nearby|Amenities|Location)/i,
+    /\bDescription\s+([\s\S]*?)\s+(?:Read More\s+)?(?:Amenities|Location & Nearby)\b/i,
   );
   return normalizeWhitespace(match?.[1] || metaDescription) || null;
 }
@@ -312,6 +315,21 @@ function mediaAssetId(url) {
   return match?.[1] || null;
 }
 
+// The gallery lazy-loads, so most images on the page exist only as 120x90
+// strip thumbnails: on 2026-10-06, 525 of 715 selected photos were 120x90,
+// useless on WhatsApp. Zameen serves every asset at 800x1200 (the largest size
+// the page itself uses; other sizes such as 1200x900 return 403), so always
+// ask for that.
+const FULL_SIZE = "800x1200";
+function fullSizeUrl(url) {
+  const parsed = new URL(url);
+  parsed.pathname = parsed.pathname.replace(
+    /(\/thumbnails\/\d+)-\d+x\d+(\.(?:jpe?g|png|webp))$/i,
+    `$1-${FULL_SIZE}$2`,
+  );
+  return parsed.href;
+}
+
 function mediaQuality(media) {
   const dimensions = new URL(media.url).pathname.match(
     /-(\d+)x(\d+)\.(?:jpe?g|png|webp)$/i,
@@ -337,7 +355,11 @@ function selectPropertyMedia(rawMedia, title) {
         normalize(item.alt) === normalizedTitle ||
         /^\s*\d+\s*$/.test(item.alt || ""),
     )
-    .map((item) => ({ ...item, assetId: mediaAssetId(item.url) }))
+    .map((item) => ({
+      ...item,
+      url: fullSizeUrl(item.url),
+      assetId: mediaAssetId(item.url),
+    }))
     .filter((item) => item.assetId);
   const bestByAsset = new Map();
   for (const item of candidates) {
@@ -667,7 +689,10 @@ async function extractListing(page, url, source) {
 
 // Content-addressed name for one media asset. A Zameen asset id always denotes
 // the same image, so the file name is stable across runs even if the agency
-// reorders the gallery. Falls back to a hash when no asset id is present.
+// reorders the gallery. The size is part of the name: the store is never
+// re-downloaded, so a bare "<id>.jpeg" saved as a 120x90 thumbnail would
+// otherwise be reused as if it were the full photo. Falls back to a hash when
+// no asset id is present.
 function mediaFileName(media) {
   const extension =
     path
@@ -677,7 +702,11 @@ function mediaFileName(media) {
   const assetId =
     mediaAssetId(media.url) ||
     createHash("sha1").update(media.url).digest("hex").slice(0, 16);
-  return { assetId, fileName: `${assetId}${extension}` };
+  const size = new URL(media.url).pathname.match(/-(\d+x\d+)\.[a-z]+$/i)?.[1];
+  return {
+    assetId,
+    fileName: size ? `${assetId}-${size}${extension}` : `${assetId}${extension}`,
+  };
 }
 
 async function downloadMediaFiles(page, listing, outputDir, options) {
