@@ -22,9 +22,21 @@ episodes and the deterministic re-entry pipeline, listing freshness, Zameen sync
 
 ## Layout
 - `scraper/`: Zameen scraper + snapshot validator (Node, Playwright). See `scraper/README.md`.
+- `sync/`: snapshot -> Supabase (Python). `parse` (raw -> typed), `diff` (pure: decides events),
+  `ingest` (writes rows, events, photos). Run: `uv run python -m sync.ingest data/raw/<date>`.
+- `supabase/`: local stack config + migrations. Photos live in the private `listing-photos` bucket.
+- `tests/`: pytest, offline. `test_real_snapshots.py` runs only when `data/` is present.
 - `data/`: git-ignored. `raw/<date>/` immutable snapshots, `media-store/` shared photos.
 
+## Local development (test locally first, hosted Supabase later)
+```
+npx supabase start          # Postgres :54322, API :54321, Studio :54323 (Docker)
+uv sync && uv run pytest
+cp .env.example .env        # fill SUPABASE_SERVICE_ROLE_KEY from `npx supabase status`
+```
+
 ## Status
-Design complete (2026-10-06). Built so far: the Zameen scraper (first source for §11).
-Not built: the diff/`listing_events` step, the database, the bot. The location alias table is out of scope for now.
-Next step: build order §17, step 1 (plumbing + Supabase schema).
+Design complete (2026-10-06). Built: Zameen scraper + data layer (listings, locations, photos,
+`listing_events`, ingest with the 2-miss rule). Not built: the bot, Redis, the Sheet/agent-command
+sources. The location alias table is out of scope for now.
+Next step: build order §17, step 1 (WhatsApp plumbing: webhook, Redis lock/debounce, persistence).
