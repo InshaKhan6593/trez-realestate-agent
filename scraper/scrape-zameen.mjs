@@ -16,7 +16,9 @@ const AGENCY = "Trez Enterprises";
 const AGENT_ID = "200295";
 const SOURCE_URLS = {
   sales: `https://www.zameen.com/Homes/Pakistan-1521-1.html?agent_id=${AGENT_ID}&types=all&property_status=available`,
-  rentals: `https://www.zameen.com/Rentals/Pakistan-1521-1.html?agent_id=${AGENT_ID}`,
+  // Same params as Zameen's own "View All" link: without them the rentals page
+  // renders no "1 to N of M Properties" counter, so completeness can't be proven.
+  rentals: `https://www.zameen.com/Rentals/Pakistan-1521-1.html?agent_id=${AGENT_ID}&types=all&property_status=available`,
 };
 const MEDIA_EXTENSIONS =
   /\.(?:avif|gif|jpe?g|png|webp|mp4|webm|mov)(?:[?#].*)?$/i;
