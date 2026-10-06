@@ -1,243 +1,189 @@
 #!/usr/bin/env node
+// Check a snapshot before anything trusts it. Errors block; warnings don't.
+//
+// Everything is checked against Zameen's own listing data (record.zameen),
+// never against page text. The validator also compares the fields Zameen
+// sends with the previous snapshot's, so a field Zameen adds (or stops
+// sending) is reported instead of silently missed.
 
 import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 const AGENCY = "Trez Enterprises";
+const AGENT_ID = "200295";
 
 function usage(message) {
   if (message) console.error(`Error: ${message}\n`);
-  console.log(`Usage: node validate-zameen-data.mjs [options]
+  console.log(`Usage: node validate-zameen-data.mjs --input-dir <snapshot> [options]
 
-  --input-dir <path>            default: ./data
   --max-age-hours <number>      fail records older than this (default: 24)
-  --require-downloaded-media    require every selected property image to exist locally
+  --require-downloaded-media    require every photo to exist locally
 `);
   process.exit(message ? 1 : 0);
 }
 
 function parseArgs(argv) {
-  const options = {
-    inputDir: path.resolve("data"),
-    maxAgeHours: 24,
-    requireDownloadedMedia: false,
-  };
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
-    if (argument === "--help" || argument === "-h") usage();
-    if (argument === "--require-downloaded-media")
-      options.requireDownloadedMedia = true;
-    else if (argument === "--input-dir" || argument === "--max-age-hours") {
-      const value = argv[++index];
-      if (!value || value.startsWith("--"))
-        usage(`${argument} requires a value.`);
-      if (argument === "--input-dir") options.inputDir = path.resolve(value);
+  const options = { inputDir: null, maxAgeHours: 24, requireDownloadedMedia: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") usage();
+    else if (arg === "--require-downloaded-media") options.requireDownloadedMedia = true;
+    else if (arg === "--input-dir" || arg === "--max-age-hours") {
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) usage(`${arg} requires a value.`);
+      if (arg === "--input-dir") options.inputDir = path.resolve(value);
       else options.maxAgeHours = Number(value);
-    } else usage(`Unknown option: ${argument}`);
+    } else usage(`Unknown option: ${arg}`);
   }
+  if (!options.inputDir) usage("--input-dir is required.");
   if (!Number.isFinite(options.maxAgeHours) || options.maxAgeHours < 0)
     usage("--max-age-hours must be a non-negative number.");
   return options;
 }
 
-function hash(value) {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
+const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const fileExists = async (p) => (await stat(p).catch(() => null))?.isFile() ?? false;
 
-function isHttpsZameenProperty(url) {
+function isZameenProperty(url) {
   try {
-    const parsed = new URL(url);
-    return (
-      parsed.protocol === "https:" &&
-      parsed.hostname === "www.zameen.com" &&
-      /^\/Property\//i.test(parsed.pathname)
-    );
+    const u = new URL(url);
+    return u.protocol === "https:" && u.hostname === "www.zameen.com" && u.pathname.startsWith("/Property/");
   } catch {
     return false;
   }
 }
 
-function printIssues(label, issues) {
-  for (const issue of issues) console.log(`${label}: ${issue}`);
+/** Every field path Zameen sends, e.g. "installments.monthlyAmount". */
+function fieldPaths(value, prefix = "", out = new Set()) {
+  if (Array.isArray(value)) {
+    for (const item of value) fieldPaths(item, `${prefix}[]`, out);
+  } else if (value && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      const p = prefix ? `${prefix}.${key}` : key;
+      out.add(p);
+      fieldPaths(child, p, out);
+    }
+  }
+  return out;
 }
 
-async function fileExists(filePath) {
-  try {
-    return (await stat(filePath)).isFile();
-  } catch {
-    return false;
+/** The newest earlier snapshot that has Zameen's data, next to this one. */
+async function previousSnapshot(inputDir) {
+  const parent = path.dirname(inputDir);
+  const names = (await readdir(parent).catch(() => []))
+    .filter((n) => n < path.basename(inputDir))
+    .sort()
+    .reverse();
+  for (const name of names) {
+    try {
+      const records = JSON.parse(await readFile(path.join(parent, name, "listings.json"), "utf8"));
+      if (records.some((r) => r?.zameen)) return { name, records };
+    } catch {
+      // not a snapshot folder
+    }
   }
+  return null;
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const aggregatePath = path.join(options.inputDir, "listings.json");
-  let listings;
-  try {
-    listings = JSON.parse(await readFile(aggregatePath, "utf8"));
-  } catch (error) {
-    throw new Error(`Cannot read ${aggregatePath}: ${error.message}`);
-  }
-  if (!Array.isArray(listings))
-    throw new Error("listings.json must contain an array.");
+  const listings = JSON.parse(await readFile(path.join(options.inputDir, "listings.json"), "utf8"));
+  if (!Array.isArray(listings)) throw new Error("listings.json must contain an array.");
 
   const errors = [];
   const warnings = [];
   const seenIds = new Set();
-  const seenUrls = new Set();
   const now = Date.now();
 
+  let summary = null;
+  try {
+    summary = JSON.parse(await readFile(path.join(options.inputDir, "run-summary.json"), "utf8"));
+  } catch {
+    errors.push("run-summary.json is missing: the run did not finish");
+  }
+  if (summary && !summary.complete)
+    warnings.push("run is incomplete: it must not be used to decide a listing has gone");
+
   for (const listing of listings) {
-    const label = `listing ${listing?.id || "<missing id>"}`;
+    const label = `listing ${listing?.id ?? "<missing id>"}`;
     if (!listing || typeof listing !== "object") {
       errors.push(`${label}: record is not an object`);
       continue;
     }
-    if (!listing.id || seenIds.has(listing.id))
-      errors.push(`${label}: missing or duplicate ID`);
+    if (!listing.id || seenIds.has(listing.id)) errors.push(`${label}: missing or duplicate id`);
     seenIds.add(listing.id);
-    if (!isHttpsZameenProperty(listing.canonicalUrl))
-      errors.push(`${label}: invalid canonical Zameen property URL`);
-    if (!listing.canonicalUrl || seenUrls.has(listing.canonicalUrl))
-      errors.push(`${label}: missing or duplicate canonical URL`);
-    seenUrls.add(listing.canonicalUrl);
-    if (!["sales", "rentals"].includes(listing.source))
-      errors.push(`${label}: source must be sales or rentals`);
-    if (listing.agency !== AGENCY)
-      errors.push(`${label}: agency is not ${AGENCY}`);
-    if (!listing.title || !listing.description)
-      errors.push(`${label}: missing title or description`);
-    if (
-      !listing.inventory ||
-      listing.inventory.sourceStatus !== "listed_on_source_at_scrape_time"
-    ) {
-      errors.push(`${label}: missing safe inventory status metadata`);
-    }
+    if (!isZameenProperty(listing.canonicalUrl)) errors.push(`${label}: invalid Zameen property URL`);
+    if (!["sales", "rentals"].includes(listing.source)) errors.push(`${label}: unknown source`);
+    if (listing.agency !== AGENCY) errors.push(`${label}: agency is not ${AGENCY}`);
     const scrapedAt = Date.parse(listing.scrapedAt);
-    if (!Number.isFinite(scrapedAt))
-      errors.push(`${label}: invalid scrapedAt timestamp`);
+    if (!Number.isFinite(scrapedAt)) errors.push(`${label}: invalid scrapedAt`);
     else if (now - scrapedAt > options.maxAgeHours * 3_600_000)
       errors.push(`${label}: older than ${options.maxAgeHours} hours`);
 
-    const facts = listing.facts;
-    if (!facts?.propertyType || !facts?.purpose || !facts?.location)
-      errors.push(`${label}: incomplete property type, purpose, or location`);
-    if (
-      !Number.isInteger(facts?.price?.amount) ||
-      facts.price.amount <= 0 ||
-      facts.price.currency !== "PKR"
-    ) {
-      errors.push(`${label}: invalid normalized PKR price`);
+    const z = listing.zameen;
+    if (!z || typeof z !== "object") {
+      errors.push(`${label}: Zameen's listing data is missing`);
+      continue;
     }
-    if (
-      !Number.isFinite(facts?.area?.value) ||
-      facts.area.value <= 0 ||
-      !facts.area.unit
-    )
-      errors.push(`${label}: invalid normalized area`);
-    if (
-      facts?.propertyType !== "Residential Plot" &&
-      !Number.isInteger(facts?.bedrooms)
-    )
-      warnings.push(`${label}: bedroom count is absent`);
-    if (
-      facts?.propertyType !== "Residential Plot" &&
-      !Number.isInteger(facts?.bathrooms)
-    )
-      warnings.push(`${label}: bathroom count is absent`);
-    if (
-      !Array.isArray(facts?.locationHierarchy) ||
-      facts.locationHierarchy.length === 0
-    )
-      warnings.push(`${label}: no location hierarchy from breadcrumbs`);
+    if (String(z.externalID) !== String(listing.id)) errors.push(`${label}: data is for listing ${z.externalID}`);
+    if (String(z.agency?.externalID) !== AGENT_ID) errors.push(`${label}: agency ${z.agency?.externalID}, not ${AGENT_ID}`);
+    if (!z.purpose) errors.push(`${label}: no purpose`);
+    if (!Array.isArray(z.category) || !z.category.length) errors.push(`${label}: no category`);
+    if (!Array.isArray(z.locations) || !z.locations.length) errors.push(`${label}: no location hierarchy`);
+    if (!(z.price > 0)) (z.hidePrice ? warnings : errors).push(`${label}: no price${z.hidePrice ? " (hidden by the agent)" : ""}`);
+    if (!(z.area > 0)) warnings.push(`${label}: no area`);
+    if (!z.geography?.lat || !z.geography?.lng) warnings.push(`${label}: no coordinates`);
 
-    if (!Array.isArray(listing.media) || listing.media.length === 0)
-      warnings.push(
-        `${label}: no selected property media; keep it out of WhatsApp gallery replies until photos are added`,
-      );
-    const mediaUrls = new Set();
-    for (const media of listing.media || []) {
-      if (!media?.url || mediaUrls.has(media.url))
-        errors.push(`${label}: missing or duplicate media URL`);
-      mediaUrls.add(media.url);
-      try {
-        const parsed = new URL(media.url);
-        if (
-          parsed.hostname !== "media.zameen.com" ||
-          !/\/thumbnails\/\d+-\d+x\d+\.(?:jpe?g|png|webp)$/i.test(
-            parsed.pathname,
-          )
-        ) {
-          errors.push(`${label}: non-gallery media was included`);
-        } else if (!/-800x1200\.[a-z]+$/i.test(parsed.pathname)) {
-          // 120x90 strip thumbnails once made up 73% of the photos.
-          errors.push(`${label}: photo is not full size (800x1200): ${media.url}`);
-        }
-      } catch {
-        errors.push(`${label}: invalid media URL`);
-      }
-    }
-    if (options.requireDownloadedMedia && listing.media.length > 0) {
-      if (
-        !Array.isArray(listing.downloadedMedia) ||
-        listing.downloadedMedia.length !== listing.media.length
-      ) {
-        errors.push(`${label}: not every selected image was downloaded`);
-      } else {
-        for (const media of listing.downloadedMedia) {
-          if (
-            media.error ||
-            !media.localFile ||
-            !(await fileExists(path.join(options.inputDir, media.localFile)))
-          ) {
-            errors.push(
-              `${label}: missing downloaded image for ${media.url || "<unknown URL>"}`,
-            );
-          }
-        }
-      }
+    const photos = Array.isArray(z.photos) ? z.photos.length : 0;
+    if (!photos) warnings.push(`${label}: no photos on Zameen`);
+    if ((listing.media?.length ?? 0) !== photos)
+      errors.push(`${label}: ${listing.media?.length ?? 0} photos captured of ${photos} on Zameen`);
+    if (options.requireDownloadedMedia && photos) {
+      const downloaded = listing.downloadedMedia ?? [];
+      if (downloaded.length !== photos) errors.push(`${label}: not every photo was downloaded`);
+      for (const media of downloaded)
+        if (media.error || !media.localFile || !(await fileExists(path.join(options.inputDir, media.localFile))))
+          errors.push(`${label}: photo missing on disk: ${media.url} ${media.error ?? ""}`.trim());
     }
   }
 
+  // Per-listing files must match the aggregate exactly.
   let detailFiles = [];
   try {
-    detailFiles = (
-      await readdir(path.join(options.inputDir, "listings"))
-    ).filter((file) => file.endsWith(".json"));
+    detailFiles = (await readdir(path.join(options.inputDir, "listings"))).filter((f) => f.endsWith(".json"));
   } catch (error) {
-    errors.push(`Cannot read listing detail directory: ${error.message}`);
+    errors.push(`cannot read listings/: ${error.message}`);
   }
   if (detailFiles.length !== listings.length)
-    errors.push(
-      `Detail file count (${detailFiles.length}) does not match aggregate count (${listings.length})`,
-    );
-  const aggregateById = new Map(
-    listings.map((listing) => [String(listing.id), listing]),
-  );
+    errors.push(`${detailFiles.length} detail files for ${listings.length} listings`);
+  const byId = new Map(listings.map((l) => [String(l.id), l]));
   for (const file of detailFiles) {
-    const id = path.basename(file, ".json");
-    const filePath = path.join(options.inputDir, "listings", file);
-    try {
-      const detail = JSON.parse(await readFile(filePath, "utf8"));
-      const aggregate = aggregateById.get(id);
-      if (!aggregate)
-        errors.push(`Detail file ${file} has no aggregate record`);
-      else if (hash(detail) !== hash(aggregate))
-        errors.push(`Detail file ${file} differs from aggregate record`);
-    } catch (error) {
-      errors.push(`Cannot parse detail file ${file}: ${error.message}`);
-    }
+    const detail = JSON.parse(await readFile(path.join(options.inputDir, "listings", file), "utf8"));
+    const aggregate = byId.get(path.basename(file, ".json"));
+    if (!aggregate || hash(detail) !== hash(aggregate)) errors.push(`listings/${file} differs from listings.json`);
   }
 
-  console.log(
-    `Validated ${listings.length} listing records in ${options.inputDir}.`,
-  );
-  printIssues("WARNING", warnings);
-  printIssues("ERROR", errors);
-  console.log(
-    `Result: ${errors.length} error(s), ${warnings.length} warning(s).`,
-  );
+  // Fields Zameen added or stopped sending since the previous snapshot.
+  const previous = await previousSnapshot(options.inputDir);
+  if (previous) {
+    const fields = (records) => {
+      const all = new Set();
+      for (const r of records) if (r?.zameen) fieldPaths(r.zameen, "", all);
+      return all;
+    };
+    const now_ = fields(listings);
+    const before = fields(previous.records);
+    for (const f of [...now_].filter((f) => !before.has(f)).sort())
+      warnings.push(`Zameen sends a new field since ${previous.name}: ${f}`);
+    for (const f of [...before].filter((f) => !now_.has(f)).sort())
+      warnings.push(`Zameen no longer sends a field it sent in ${previous.name}: ${f}`);
+  }
+
+  console.log(`Validated ${listings.length} listings in ${options.inputDir}.`);
+  for (const w of warnings) console.log(`WARNING: ${w}`);
+  for (const e of errors) console.log(`ERROR: ${e}`);
+  console.log(`Result: ${errors.length} error(s), ${warnings.length} warning(s).`);
   process.exitCode = errors.length ? 1 : 0;
 }
 

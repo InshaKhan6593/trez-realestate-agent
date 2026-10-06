@@ -22,8 +22,11 @@ episodes and the deterministic re-entry pipeline, listing freshness, Zameen sync
 
 ## Layout
 - `scraper/`: Zameen scraper + snapshot validator (Node, Playwright). See `scraper/README.md`.
-- `sync/`: snapshot -> Supabase (Python). `parse` (raw -> typed), `diff` (pure: decides events),
-  `ingest` (writes rows, events, photos). Run: `uv run python -m sync.ingest data/raw/<date>`.
+  Reads ONLY Zameen's structured page data (`window.state`), never page text; stops loudly if it
+  changes shape. Saves Zameen's whole listing object so nothing the agent entered is dropped.
+- `sync/`: snapshot -> Supabase (Python). `parse` (Zameen object -> typed, whole object kept as
+  `zameen_data`), `diff` (pure: decides events), `ingest` (rows, events, photos).
+  Run: `uv run python -m sync.ingest data/raw/<run>`.
 - `app/`: WhatsApp side. `webhook` (FastAPI: verify signature, store, queue, 200), `meta` (payload
   parsing), `store` (leads/messages/turns), `inbox` (Redis debounce seq + per-lead lock),
   `turn` (one debounced turn), `worker` (arq), `sender` (Meta send / dry run),
@@ -31,7 +34,14 @@ episodes and the deterministic re-entry pipeline, listing freshness, Zameen sync
 - `supabase/`: local stack config + migrations. Photos live in the private `listing-photos` bucket.
 - `tests/`: pytest. Pure tests always run; `test_whatsapp_flow.py` needs local Supabase + Redis,
   `test_real_snapshots.py` needs `data/`. Both skip cleanly when absent.
-- `data/`: git-ignored. `raw/<date>/` immutable snapshots, `media-store/` shared photos.
+- `data/`: git-ignored. `raw/<run>/` immutable snapshots, `media-store/` shared photos,
+  `archive/` older snapshots without structured data (not loaded).
+
+## Working rules learned here
+- No hand-written text patterns or hard-coded guesses about Zameen's pages: read its structured
+  data, derive values from it (e.g. photo size from the page), and fail loudly when it changes.
+- Business mappings (Zameen category -> our 6 search types) are allowed, but unknown values must
+  degrade gracefully ("other", original kept) and be reported, never break the run.
 
 ## Local development (test locally first, hosted Supabase later)
 ```
@@ -46,8 +56,9 @@ Windows: psycopg async cannot use the Proactor event loop; `app/__init__.py` and
 handle it. On the Linux server plain `uvicorn app.webhook:app` is fine.
 
 ## Status
-Design complete (2026-10-06). Built: Zameen scraper; data layer (listings, locations, photos,
-`listing_events`, 2-miss rule); WhatsApp plumbing (signed webhook, dedupe, debounce, per-lead lock,
+Design complete (2026-10-06). Built: Zameen scraper (structured data only); data layer (listings
+with coordinates, amenities, installment plans, Zameen's full object; locations; photos;
+`listing_events`; 2-miss rule; history starts at snapshot 2026-10-06T1600); WhatsApp plumbing (signed webhook, dedupe, debounce, per-lead lock,
 takeover, delivery statuses, dry-run sending). The reply is a placeholder; no real number connected.
 Not built: listings step 2 extras (Sheet sync, `#sold` commands), the turn pipeline, Langfuse/Sentry.
 The location alias table is out of scope for now.

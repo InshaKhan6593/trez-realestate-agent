@@ -86,11 +86,17 @@ def plan_sync(
             ))
         if listing.content_hash != before.content_hash:
             new = listing.details()
-            changed = sorted(k for k in new if new[k] != before.details.get(k))
-            plan.events.append(Event(
-                zid, "details_changed",
-                {k: before.details.get(k) for k in changed}, {k: new[k] for k in changed},
-            ))
+            # A field we did not have before (unknown -> known) is enrichment,
+            # not a change on Zameen; only a known value that differs counts.
+            changed = sorted(
+                k for k in new
+                if before.details.get(k) is not None and new[k] != before.details.get(k)
+            )
+            if changed:
+                plan.events.append(Event(
+                    zid, "details_changed",
+                    {k: before.details.get(k) for k in changed}, {k: new[k] for k in changed},
+                ))
         if before.status == "needs_verification":
             plan.reappeared.append(zid)
             plan.events.append(Event(zid, "relisted", {"status": before.status}, {"status": "available"}))
@@ -98,9 +104,7 @@ def plan_sync(
     if not snap.complete:
         plan.absences_skipped = "run incomplete"
     elif previous_complete_count and len(snap.listings) < MIN_SHARE_OF_PREVIOUS * previous_complete_count:
-        plan.absences_skipped = (
-            f"{len(snap.listings)} listings vs {previous_complete_count} last time"
-        )
+        plan.absences_skipped = f"{len(snap.listings)} listings vs {previous_complete_count} last time"
     else:
         for zid, before in sorted(current.items()):
             if zid in snap.listings or before.status not in TRACKED_ON_PORTAL:

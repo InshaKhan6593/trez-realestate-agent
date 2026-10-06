@@ -12,8 +12,13 @@ def _listing(zid: int, price: int = 50_000_000, title: str = "House") -> Listing
     return Listing(
         zameen_id=zid, url=f"https://www.zameen.com/Property/x-{zid}-1-1.html", title=title,
         description=None, purpose="sale", price_pkr=price, price_period=None,
-        price_text=None, property_type="house", zameen_type="House", size_sqyd=None,
-        size_text=None, bedrooms=4, bathrooms=4, location_id=21109, photos=(),
+        property_type="house", zameen_type="House", size_sqyd=None,
+        bedrooms=4, bathrooms=4, location_id=21109, photos=(),
+        lat=None, lng=None, geo_exact=None, amenities=(), payment_plan=None,
+        furnishing_status=None, completion_status=None, occupancy_status=None,
+        ownership_status=None, zameen_verification=None, contact_name=None, video_urls=(),
+        zameen_created_at=None, zameen_updated_at=None, zameen_reactivated_at=None,
+        zameen_data={},
     )
 
 
@@ -28,7 +33,8 @@ def _current(listing: Listing, status: str = "available", missing_runs: int = 0)
 def _snap(listings, complete=True) -> Snapshot:
     return Snapshot(
         name="test", scraped_at=datetime(2026, 10, 6, tzinfo=timezone.utc), complete=complete,
-        listings={l.zameen_id: l for l in listings}, locations={}, unusable=(),
+        listings={l.zameen_id: l for l in listings}, locations={}, photo_paths={},
+        unusable=(), unmapped_types=(),
     )
 
 
@@ -110,3 +116,29 @@ def test_agent_statuses_are_left_alone():
     db = {**DB, 1: _current(BASE[0], status="sold"), 10: _current(BASE[9], status="rented")}
     plan = plan_sync(db, _snap(BASE[:9]), 10)
     assert plan.events == [] and plan.reappeared == [] and 10 not in plan.missed
+
+
+def test_newly_captured_fields_are_enrichment_not_change():
+    # An older snapshot had no amenities; the first snapshot that captures
+    # them must not report every listing as "details changed".
+    enriched = replace(BASE[0], amenities=({"slug": "parking-spaces", "value": 2},),
+                       furnishing_status="furnished")
+    plan = plan_sync(DB, _snap([enriched, *BASE[1:]]), 10)
+    assert plan.events == [] and len(plan.updates) == 10
+
+
+def test_known_field_that_changes_is_reported():
+    before = replace(BASE[0], furnishing_status="furnished")
+    db = {**DB, 1: _current(before)}
+    after = replace(BASE[0], furnishing_status="unfurnished")
+    [event] = plan_sync(db, _snap([after, *BASE[1:]]), 10).events
+    assert event.type == "details_changed"
+    assert event.old == {"furnishing_status": "furnished"} and event.new == {"furnishing_status": "unfurnished"}
+
+
+def test_exact_size_change_is_reported():
+    from decimal import Decimal
+    db = {**DB, 1: _current(replace(BASE[0], size_sqyd=Decimal("266.67")))}
+    new = replace(BASE[0], size_sqyd=Decimal("300.00"))
+    [event] = plan_sync(db, _snap([new, *BASE[1:]]), 10).events
+    assert event.type == "details_changed" and event.new == {"size_sqyd": "300.00"}

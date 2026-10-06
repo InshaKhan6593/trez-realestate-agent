@@ -1,6 +1,6 @@
 """Load one raw snapshot into Supabase: photos to Storage, rows + events to Postgres.
 
-    uv run python -m sync.ingest data/raw/2026-10-06
+    uv run python -m sync.ingest data/raw/2026-10-06T1730
 
 Snapshots must be ingested in date order, each exactly once. Re-running the
 same snapshot is a no-op, and an older one is refused, so an absence can
@@ -39,17 +39,17 @@ class AlreadyIngested(RuntimeError):
 # Storage
 # --------------------------------------------------------------------------
 
-def upload_photos(snap: Snapshot, media_dir: Path, url: str, key: str) -> tuple[dict, list[str]]:
+def upload_photos(snap: Snapshot, url: str, key: str) -> tuple[dict, list[str]]:
     """Upload each photo not yet in the bucket. -> ({file: (w, h)}, missing files)."""
     headers = {"Authorization": f"Bearer {key}", "apikey": key}
-    wanted = sorted({f for listing in snap.listings.values() for f in listing.photos})
+    wanted = sorted({p.file for listing in snap.listings.values() for p in listing.photos})
     sizes: dict[str, tuple[int, int]] = {}
     missing: list[str] = []
     with httpx.Client(base_url=f"{url}/storage/v1", headers=headers, timeout=60) as client:
         existing = _list_bucket(client)
         for name in wanted:
-            path = media_dir / name
-            if not path.is_file():
+            path = snap.photo_paths.get(name)
+            if path is None or not path.is_file():
                 missing.append(name)
                 continue
             with Image.open(path) as img:
@@ -88,23 +88,28 @@ def _list_bucket(client: httpx.Client, page: int = 1000) -> set[str]:
 _CURRENT_SQL = """
 SELECT zameen_id, id, price_pkr, content_hash, status, missing_runs,
        title, description, purpose, property_type, size_sqyd,
-       bedrooms, bathrooms, location_id
+       bedrooms, bathrooms, location_id,
+       amenities, payment_plan, furnishing_status, completion_status
 FROM listings WHERE zameen_id IS NOT NULL
 """
 
 
 def load_current(cur) -> dict[int, Current]:
     out = {}
-    for (zid, lid, price, chash, status, missing, title, desc, purpose,
-         ptype, size, beds, baths, loc) in cur.execute(_CURRENT_SQL).fetchall():
+    for (zid, lid, price, chash, status, missing, title, desc, purpose, ptype, size,
+         beds, baths, loc, amenities, plan, furnishing, completion) in cur.execute(
+            _CURRENT_SQL).fetchall():
         out[zid] = Current(
             listing_id=lid, price_pkr=price, content_hash=chash, status=status,
             missing_runs=missing,
+            # Must mirror Listing.details(): empty/None means "not captured".
             details={
                 "title": title, "description": desc, "purpose": purpose,
                 "property_type": ptype,
                 "size_sqyd": str(size) if size is not None else None,
                 "bedrooms": beds, "bathrooms": baths, "location_id": loc,
+                "amenities": amenities or None, "payment_plan": plan,
+                "furnishing_status": furnishing, "completion_status": completion,
             },
         )
     return out
@@ -121,16 +126,25 @@ def check_order(cur, snap: Snapshot) -> None:
         )
 
 
-_LISTING_COLS = (
-    "url, title, description, purpose, price_pkr, price_period, price_text, "
-    "property_type, zameen_type, size_sqyd, size_text, bedrooms, bathrooms, "
-    "location_id, content_hash"
+_LISTING_FIELDS = (
+    "url", "title", "description", "purpose", "price_pkr", "price_period",
+    "property_type", "zameen_type", "size_sqyd", "bedrooms", "bathrooms",
+    "location_id", "content_hash", "lat", "lng", "geo_exact", "amenities", "payment_plan",
+    "furnishing_status", "completion_status", "occupancy_status", "ownership_status",
+    "zameen_verification", "contact_name", "video_urls",
+    "zameen_created_at", "zameen_updated_at", "zameen_reactivated_at",
+    "zameen_data",
 )
-_LISTING_VALS = (
-    "%(url)s, %(title)s, %(description)s, %(purpose)s, %(price_pkr)s, %(price_period)s, "
-    "%(price_text)s, %(property_type)s, %(zameen_type)s, %(size_sqyd)s, %(size_text)s, "
-    "%(bedrooms)s, %(bathrooms)s, %(location_id)s, %(content_hash)s"
-)
+_LISTING_COLS = ", ".join(_LISTING_FIELDS)
+_LISTING_VALS = ", ".join(f"%({f})s" for f in _LISTING_FIELDS)
+
+
+def _row(listing) -> dict:
+    row = listing.as_row()
+    row["amenities"] = Jsonb(row["amenities"])
+    row["payment_plan"] = Jsonb(row["payment_plan"]) if row["payment_plan"] else None
+    row["zameen_data"] = Jsonb(row["zameen_data"])
+    return row
 
 
 def write_plan(cur, snap: Snapshot, plan: Plan, sizes: dict) -> int:
@@ -156,7 +170,7 @@ def write_plan(cur, snap: Snapshot, plan: Plan, sizes: dict) -> int:
             f"""INSERT INTO listings (zameen_id, {_LISTING_COLS}, status, first_seen_at,
                    last_seen_on_portal_at, last_verified_at)
                 VALUES (%(zameen_id)s, {_LISTING_VALS}, 'available', %(seen)s, %(seen)s, %(seen)s)""",
-            {**listing.as_row(), "seen": seen},
+            {**_row(listing), "seen": seen},
         )
 
     reappeared = set(plan.reappeared)
@@ -168,7 +182,7 @@ def write_plan(cur, snap: Snapshot, plan: Plan, sizes: dict) -> int:
                    status = CASE WHEN %(reappeared)s THEN 'available' ELSE status END,
                    updated_at = now()
                 WHERE zameen_id = %(zameen_id)s""",
-            {**listing.as_row(), "seen": seen, "reappeared": listing.zameen_id in reappeared},
+            {**_row(listing), "seen": seen, "reappeared": listing.zameen_id in reappeared},
         )
 
     to_verify = set(plan.to_verify)
@@ -198,8 +212,8 @@ def write_plan(cur, snap: Snapshot, plan: Plan, sizes: dict) -> int:
         cur.executemany(
             """INSERT INTO listing_media (listing_id, asset_id, seq, storage_path, width, height)
                VALUES (%s, %s, %s, %s, %s, %s)""",
-            [(ids[zid], name.split("-")[0], seq, name, *sizes[name])
-             for seq, name in enumerate(listing.photos) if name in sizes],
+            [(ids[zid], photo.asset_id, seq, photo.file, *sizes[photo.file])
+             for seq, photo in enumerate(listing.photos) if photo.file in sizes],
         )
 
     cur.execute(
@@ -212,7 +226,8 @@ def write_plan(cur, snap: Snapshot, plan: Plan, sizes: dict) -> int:
 def ingest(raw_dir: Path) -> dict:
     load_dotenv()
     snap = load_snapshot(raw_dir)
-    media_dir = raw_dir.parent.parent / "media-store"
+    if not snap.listings:
+        raise Refused(f"{raw_dir}: no usable listings ({len(snap.unusable)} unusable)")
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn, conn.cursor() as cur:
         check_order(cur, snap)
@@ -223,7 +238,7 @@ def ingest(raw_dir: Path) -> dict:
 
         # Storage first: if the DB write fails afterwards, an orphan photo is harmless.
         sizes, missing = upload_photos(
-            snap, media_dir, os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+            snap, os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"]
         )
         run_id = write_plan(cur, snap, plan, sizes)
         conn.commit()
@@ -237,6 +252,8 @@ def ingest(raw_dir: Path) -> dict:
         "photos": len(sizes),
         "photos_missing_on_disk": len(missing),
         "unusable": list(snap.unusable),
+        # Zameen categories not in parse.PROPERTY_TYPES yet: stored as "other".
+        "unmapped_property_types": list(snap.unmapped_types),
         **plan.summary(),
     }
 
