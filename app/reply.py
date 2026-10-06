@@ -1,14 +1,15 @@
-"""What the bot says. PLACEHOLDER until the turn pipeline (§17 step 3).
-
-It proves the plumbing end to end: one reply per debounced burst, naming how
-many messages it covered. It states no listing facts on purpose; facts only
-ever come from tools.
-"""
+"""What the bot says: the agent graph (agent.graph), adapted to app.turn."""
 
 from __future__ import annotations
 
+from psycopg import AsyncConnection
 
-def placeholder_reply(messages: list[dict]) -> str:
-    n = len(messages)
-    covered = "aap ka message mil gaya" if n == 1 else f"aap ke {n} messages mil gaye"
-    return f"Shukriya! {covered}. Hamari team jald jawab degi. (test reply)"
+from agent.graph import AgentReply, agent_reply
+from agent.llm import LLM
+
+
+def make_reply_fn(llm: LLM):
+    async def reply_fn(conn: AsyncConnection, lead_id: int, turn_id: int,
+                       messages: list[dict]) -> AgentReply:
+        return await agent_reply(conn, llm, lead_id, turn_id, [m["id"] for m in messages])
+    return reply_fn

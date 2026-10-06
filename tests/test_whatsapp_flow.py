@@ -87,21 +87,39 @@ def _seq(lead_id: int) -> int:
     return int(redis_sync.Redis.from_url(REDIS_URL).get(f"inbox:{lead_id}:seq") or 0)
 
 
+class _Reply:
+    def __init__(self, text):
+        self.text, self.media_listing_id, self.alert = text, None, None
+
+    async def commit(self, conn):
+        pass
+
+
+def counting_reply(messages: list[dict]) -> str:
+    n = len(messages)
+    return f"received {n} message{'s' if n > 1 else ''}"
+
+
 def _turn(lead_id: int, seq: int, reply_fn=None) -> str:
     """Run one turn the way the arq worker would, with the real reply/sender."""
     from psycopg_pool import AsyncConnectionPool
     from redis.asyncio import Redis
 
     from app.config import get_settings
-    from app.reply import placeholder_reply
     from app.sender import send_text
     from app.turn import run_turn
+
+    text_fn = reply_fn or counting_reply
+
+    async def fake_agent(conn, lead_id, turn_id, messages):
+        # The plumbing is tested without a model; agent.graph has its own tests.
+        return _Reply(text_fn(messages))
 
     async def go():
         r = Redis.from_url(REDIS_URL)
         async with AsyncConnectionPool(DB_URL, kwargs={"autocommit": True}, open=False) as pool:
             out = await run_turn(r, pool, get_settings(), lead_id, seq,
-                                 reply_fn=reply_fn or placeholder_reply, send_fn=send_text)
+                                 reply_fn=fake_agent, send_fn=send_text)
         await r.aclose()
         return out
 

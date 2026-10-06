@@ -127,12 +127,13 @@ async def finish_turn(conn: AsyncConnection, turn_id: int, status: str, *,
 
 async def save_outbound(conn: AsyncConnection, lead_id: int, turn_id: int, text: str,
                         wa_message_id: str | None, status: str, error: str | None,
-                        at: datetime) -> None:
+                        at: datetime, *, type: str = "text") -> None:
+    """type 'image' stores the photo's storage path in text, for the record."""
     await conn.execute(
         """INSERT INTO messages (lead_id, direction, wa_message_id, type, text,
                                  delivery_status, error, turn_id, at)
-           VALUES (%s, 'out', %s, 'text', %s, %s, %s, %s, %s)""",
-        (lead_id, wa_message_id, text, status, error, turn_id, at),
+           VALUES (%s, 'out', %s, %s, %s, %s, %s, %s, %s)""",
+        (lead_id, wa_message_id, type, text, status, error, turn_id, at),
     )
     if status == "sent":
         await conn.execute("UPDATE leads SET last_outbound_at = %s WHERE id = %s", (at, lead_id))
