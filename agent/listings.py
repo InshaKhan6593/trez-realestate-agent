@@ -19,10 +19,6 @@ from psycopg.rows import dict_row
 from .locations import Tree, load_tree
 
 FRESH_FOR = timedelta(days=7)
-# How far "nearby" may reach from the place the buyer asked for. Zameen's
-# "Cantt" holds both Karachi Cantonment and Malir Cantonment ~20 km apart,
-# so tree closeness alone is not enough.
-NEARBY_KM = 7.0
 SUGGEST = 3
 
 
@@ -159,10 +155,11 @@ async def search_listings(conn: AsyncConnection, c: Criteria, limit: int = SUGGE
     """Listings that fit, best first, and what had to be widened to find them.
 
     1. exact   : in the place asked for (and everything under it)
-    2. nearby  : elsewhere, ranked by tree closeness (same society, then the
-                 wider area) then distance, within NEARBY_KM of that place
-    3. none    : nothing within reach; the closest match anywhere is returned
-                 separately with its real distance, so the reply can say so
+    2. nearby  : nothing there, so up the tree one level at a time (Sector G ->
+                 Askari 5 -> Malir Cantonment -> Cantt -> Karachi); the first
+                 level with matches is shown, closest first, each with its
+                 distance and the level it came from, so the reply says so
+    3. none    : no match at any level (e.g. nothing of that type/budget at all)
     Only listings the agent may call available are suggested.
     """
     if c.purpose not in ("sale", "rent"):
@@ -193,23 +190,25 @@ async def search_listings(conn: AsyncConnection, c: Criteria, limit: int = SUGGE
         return {"stage": "exact", "asked_location": tree.label(asked.id), "total": len(inside),
                 "results": [present(r) for r in best[:limit]]}
 
-    def closeness(r):
-        km = _km(asked.lat, asked.lng, r["lat"], r["lng"])
-        return (-tree.common_depth(asked.id, r["location_id"]), km if km is not None else 1e9, _fit(r, c))
+    # Nothing there: go up the tree one level at a time; the first level that
+    # has matches is shown, closest to the asked place first, with distances.
+    def km(r):
+        d = _km(asked.lat, asked.lng, r["lat"], r["lng"])
+        return d if d is not None else float("inf")
 
-    ranked = sorted((r for r in fits if r["location_id"] in tree.places), key=closeness)
-    near = [r for r in ranked
-            if (km := _km(asked.lat, asked.lng, r["lat"], r["lng"])) is not None and km <= NEARBY_KM]
-    if near:
-        return {"stage": "nearby", "asked_location": tree.label(asked.id),
-                "nothing_in_asked_location": True, "within_km": NEARBY_KM, "total": len(near),
-                "results": [present(r, _km(asked.lat, asked.lng, r["lat"], r["lng"])) for r in near[:limit]]}
+    for levels_up, ancestor_id in enumerate(reversed(asked.path[:-1]), start=1):
+        under = [r for r in fits if r["location_id"] in tree.places
+                 and ancestor_id in tree.places[r["location_id"]].path]
+        if under:
+            best = sorted(under, key=lambda r: (km(r), _fit(r, c)))
+            return {"stage": "nearby", "asked_location": tree.label(asked.id),
+                    "nothing_in_asked_location": True,
+                    "widened_to": tree.places[ancestor_id].name, "levels_up": levels_up,
+                    "total": len(under),
+                    "results": [present(r, km(r) if km(r) != float("inf") else None) for r in best[:limit]]}
 
-    closest = min(fits, key=lambda r: _km(asked.lat, asked.lng, r["lat"], r["lng"]) or 1e9, default=None)
     return {"stage": "none", "asked_location": tree.label(asked.id),
-            "nothing_in_asked_location": True, "within_km": NEARBY_KM, "total": 0, "results": [],
-            "closest_elsewhere": present(closest, _km(asked.lat, asked.lng, closest["lat"], closest["lng"]))
-            if closest else None}
+            "nothing_in_asked_location": True, "total": 0, "results": []}
 
 
 # --------------------------------------------------------------------------

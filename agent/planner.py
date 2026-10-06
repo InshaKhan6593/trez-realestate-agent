@@ -60,12 +60,14 @@ class LeadState:
 @dataclass
 class Plan:
     slot_updates: dict[str, dict] = field(default_factory=dict)
+    clear_slots: list[str] = field(default_factory=list)       # e.g. an old place, replaced
     answered_questions: list[str] = field(default_factory=list)
     listing_refs: list[dict] = field(default_factory=list)    # {"zameen_id"} or {"history": text} or {"current": True}
     want_details: bool = False
     want_photos: bool = False
     want_video: bool = False
     search: dict | None = None                               # Criteria fields, from slots
+    preview: dict | None = None                              # buy/rent unknown: count stock both ways
     location_text: str | None = None                         # to resolve with find_location
     ask: str | None = None
     must: list[dict] = field(default_factory=list)           # things the reply has to say
@@ -73,11 +75,15 @@ class Plan:
     reject: list[dict] = field(default_factory=list)
     scores: dict = field(default_factory=dict)
     returning: bool = False
+    greet: bool = False                                      # first contact, or they greeted
 
 
 def _known(slots: dict, name: str) -> bool:
     s = slots.get(name)
-    return bool(s) and s.get("value") not in (None, "", []) and s.get("confidence", 0) >= KNOWN_AT
+    if not s or s.get("value") in (None, "", []) or s.get("confidence", 0) < KNOWN_AT:
+        return False
+    # Buy or rent is never assumed: only what the buyer said counts.
+    return s.get("source") == "stated" if name == "purpose" else True
 
 
 def merge_slots(current: dict, ext: Extraction) -> dict:
@@ -130,6 +136,7 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
     slots = {**state.slots, **p.slot_updates}
     p.answered_questions = [q for q in state.open_questions if q in p.slot_updates]
     p.returning = (state.hours_since_last_message or 0) >= RETURNING_AFTER_HOURS
+    p.greet = state.hours_since_last_message is None or any(i.type == "greeting" for i in ext.intents)
     types = {i.type for i in ext.intents}
 
     # --- what changed since we last told them (§9, report first) ----------
@@ -153,8 +160,9 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
             p.listing_refs.append({"zameen_id": intent.listing.zameen_id})
         elif intent.listing and intent.listing.from_history:
             p.listing_refs.append({"history": intent.listing.from_history})
-        elif intent.type in listing_intents and state.listings:
-            p.listing_refs.append({"current": True})
+    # "photos bhejo" next to a link means that link, not the last listing discussed.
+    if not p.listing_refs and state.listings and any(i.type in listing_intents for i in ext.intents):
+        p.listing_refs.append({"current": True})
     p.listing_refs = [dict(t) for t in {tuple(sorted(r.items())) for r in p.listing_refs}]
     p.want_details = bool(types & {"listing_question", "availability"}) or bool(p.listing_refs)
     p.want_photos = "photos" in types
@@ -177,8 +185,23 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
             "bedrooms_min": (slots.get("bedrooms_min") or {}).get("value"),
             "exclude_listing_ids": [k.listing_id for k in state.listings if k.relation == "rejected"],
         }
+    elif wants_search:
+        # Buy or rent not said yet: count what Trez has both ways (no prices),
+        # so the reply can be honest about stock while asking which they want.
+        p.preview = {
+            "property_types": _as_list((slots.get("property_types") or {}).get("value")),
+            "location_id": (slots.get("location_id") or {}).get("value"),
+        }
     if "location_text" in p.slot_updates and "location_id" not in p.slot_updates:
+        # A new place by name: the old place no longer applies. It is looked up;
+        # until then (or if we have nothing there) the search is not tied to a place.
         p.location_text = str(p.slot_updates["location_text"]["value"])
+        p.clear_slots.append("location_id")
+        for target in (p.search, p.preview):
+            if target is not None:
+                target["location_id"] = None
+    elif "location_id" in p.slot_updates and "location_text" in state.slots:
+        p.clear_slots.append("location_text")
 
     # --- scores and handoff -------------------------------------------------
     apply_scores(p, state, ext, stock_matches)

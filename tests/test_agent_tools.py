@@ -82,20 +82,24 @@ def test_exact_place_first():
     assert all(x["price_pkr"] <= 50_000_000 for x in r["results"])
 
 
-def test_nothing_in_the_sector_suggests_the_same_society_first():
-    # Sector G has a house but no flat: suggest Askari 5's other sectors, nearest first.
+def test_nothing_in_the_sector_moves_up_one_level():
+    # Sector G has a house but no flat: one level up is Askari 5; nearest first.
     r = run(search_listings, Criteria("sale", ["flat"], location_id=12242, budget_max=50_000_000))
     assert r["stage"] == "nearby" and r["nothing_in_asked_location"]
+    assert (r["widened_to"], r["levels_up"]) == ("Askari 5", 1)
     assert all(x["location"].startswith("Askari 5 - Sector") for x in r["results"])
     distances = [x["distance_km"] for x in r["results"]]
     assert distances == sorted(distances)
 
 
-def test_tree_relatives_far_away_are_not_called_nearby():
-    # Askari 2 is under Zameen's "Cantt" like Malir Cantonment, but ~20 km away.
+def test_climbs_level_by_level_until_a_level_has_matches():
+    # Askari 2 has no house, nor does Karachi Cantonment above it; the next level,
+    # Cantt, has houses in Malir Cantonment: shown closest first, with real distances.
     r = run(search_listings, Criteria("sale", ["house"], location_id=6638))
-    assert all(x["distance_km"] <= r["within_km"] for x in r["results"])
-    assert not any("Malir Cantonment" in x["location"] for x in r["results"])
+    assert (r["widened_to"], r["levels_up"]) == ("Cantt", 2)
+    assert all("Cantt" in x["location"] for x in r["results"])
+    distances = [x["distance_km"] for x in r["results"]]
+    assert distances == sorted(distances) and distances[0] > 10      # honest: it is far
 
 
 def test_purpose_is_never_assumed():

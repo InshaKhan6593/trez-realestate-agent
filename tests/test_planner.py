@@ -151,3 +151,20 @@ def test_hot_lead_from_facts_not_vibes():
 
 def test_dealer_is_junk():
     assert score({}, ext("search", signals=["dealer"]), None)["priority"] == "junk"
+
+
+def test_an_inferred_purpose_is_not_known():
+    # "flat chahiye" does not say buy or rent; a model's guess must not decide it.
+    state = LeadState(1)
+    p = plan(state, ext("search", slots=[("purpose", "sale", "inferred", 0.9),
+                                         ("location_id", 6655, "stated", 1.0),
+                                         ("property_types", ["flat"], "stated", 1.0)]))
+    assert p.search is None and p.ask == "purpose"
+    assert p.preview == {"property_types": ["flat"], "location_id": 6655}
+
+
+def test_a_new_place_by_name_replaces_the_old_place():
+    state = LeadState(1, slots={"purpose": stated("sale"), "location_id": stated(12242)})
+    p = plan(state, ext("search", slots=[("location_text", "Bahria Town", "stated", 1.0)]))
+    assert p.location_text == "Bahria Town" and "location_id" in p.clear_slots
+    assert p.search["location_id"] is None        # not searched around the old place

@@ -114,10 +114,25 @@ async def find_location(conn: AsyncConnection, text: str, limit: int = 3) -> lis
 async def place_choices(conn: AsyncConnection) -> list[dict]:
     """Every place we have listings under, for the extractor to choose from:
     [{"id": 17289, "name": "Askari 5 - Sector J", "in": "Askari 5, Malir
-    Cantonment, Cantt, Karachi"}]. Small (a few dozen places)."""
+    Cantonment, Cantt, Karachi"}]. Small (a few dozen places).
+
+    Ancestors of the deepest place that holds ALL the stock (here Pakistan and
+    Sindh above Karachi) are left out: choosing one says nothing, and a model
+    that cannot find "Bahria Town" must not fall back to "Pakistan"."""
     tree = await load_tree(conn)
+    stock = dict((await (await conn.execute(
+        """SELECT l.id, count(x.id) FROM locations l
+           LEFT JOIN listings x ON x.location_id IN
+                (SELECT d.id FROM locations d WHERE d.path @> ARRAY[l.id])
+           GROUP BY l.id""")).fetchall()))
+    total = max(stock.values(), default=0)
+    covering = [p for p in tree.places.values() if stock.get(p.id) == total]
+    deepest = max(covering, key=lambda p: p.depth, default=None)
+    too_broad = set(deepest.path[:-1]) if deepest else set()
     out = []
     for place in sorted(tree.places.values(), key=lambda p: p.path):
+        if place.id in too_broad:
+            continue
         ancestors = tree.label(place.id).split(", ")[1:]
         out.append({"id": place.id, "name": place.name, "in": ", ".join(ancestors)})
     return out

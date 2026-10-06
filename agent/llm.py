@@ -42,6 +42,23 @@ class Usage:
         })
 
 
+def options_for(role: str) -> dict:
+    """Per-role request options from .env, so they can be tuned per model:
+    {ROLE}_REASONING   off (default) | low | medium | high
+    {ROLE}_TEMPERATURE a number; default 0 for the extractor (read the same
+                       message the same way), unset for the responder.
+    Measured with deepseek-v4-flash: reasoning on took 12-21 s per extraction
+    (and once misread the message); off took 2-3 s with the same answers."""
+    load_dotenv()
+    out: dict = {}
+    reasoning = os.environ.get(f"{role.upper()}_REASONING", "off").strip().lower()
+    out["reasoning"] = {"enabled": False} if reasoning == "off" else {"effort": reasoning}
+    temperature = os.environ.get(f"{role.upper()}_TEMPERATURE", "0" if role == "extractor" else "")
+    if temperature.strip():
+        out["temperature"] = float(temperature)
+    return out
+
+
 def model_for(role: str) -> str:
     load_dotenv()
     name = os.environ.get(f"{role.upper()}_MODEL", "").strip()
@@ -77,15 +94,16 @@ class LLM:
 
     async def text(self, role: str, messages: list[dict], usage: Usage, **extra) -> str:
         model = model_for(role)
-        body = await self._chat(model, messages, **extra)
+        body = await self._chat(model, messages, **{**options_for(role), **extra})
         usage.add(role, model, body)
         return (body["choices"][0]["message"].get("content") or "").strip()
 
     async def structured(self, role: str, messages: list[dict], schema: type[T], usage: Usage) -> T:
         model = model_for(role)
+        opts = options_for(role)
         json_schema = schema.model_json_schema()
         try:
-            body = await self._chat(model, messages, response_format={
+            body = await self._chat(model, messages, **opts, response_format={
                 "type": "json_schema",
                 "json_schema": {"name": schema.__name__, "strict": False, "schema": json_schema},
             })
@@ -95,7 +113,7 @@ class LLM:
             # The model does not do schema output: put the schema in the prompt.
             messages = [*messages, {"role": "system", "content":
                         "Answer with JSON only, matching this JSON schema:\n" + json.dumps(json_schema)}]
-            body = await self._chat(model, messages)
+            body = await self._chat(model, messages, **opts)
         usage.add(role, model, body)
         raw = body["choices"][0]["message"].get("content") or ""
         try:
@@ -103,7 +121,7 @@ class LLM:
         except ValidationError as err:
             repair = [*messages, {"role": "assistant", "content": raw},
                       {"role": "user", "content": f"That JSON is invalid: {err}. Reply with corrected JSON only."}]
-            body = await self._chat(model, repair)
+            body = await self._chat(model, repair, **opts)
             usage.add(role + "_repair", model, body)
             raw = body["choices"][0]["message"].get("content") or ""
             try:

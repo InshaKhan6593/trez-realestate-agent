@@ -39,8 +39,10 @@ def _cleanup() -> None:
         ids = [r[0] for r in conn.execute(
             "SELECT id FROM leads WHERE phone LIKE %s", (TEST_PREFIX + "%",)).fetchall()]
         if ids:
-            conn.execute("DELETE FROM messages WHERE lead_id = ANY(%s)", (ids,))
-            conn.execute("DELETE FROM turns WHERE lead_id = ANY(%s)", (ids,))
+            # Everything that hangs off a lead, children before parents.
+            for table in ("handoffs", "lead_slots", "lead_listings", "open_questions", "episodes",
+                          "messages", "turns"):
+                conn.execute(f"DELETE FROM {table} WHERE lead_id = ANY(%s)", (ids,))
             conn.execute("DELETE FROM leads WHERE id = ANY(%s)", (ids,))
     redis_sync.Redis.from_url(REDIS_URL).flushdb()
 

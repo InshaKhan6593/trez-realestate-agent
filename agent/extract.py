@@ -19,15 +19,28 @@ agency) about property. Buyers write in Roman Urdu, Urdu or English, often mixed
 Report ONLY what the messages say, as JSON matching the schema. Decide nothing, answer nothing.
 
 Rules:
-- intents: every distinct thing they want in BUYER_MESSAGES_NOW, in order.
+- language: roman_urdu = Urdu written in English letters ("flat chahiye", "kitne ka hai");
+  urdu = Urdu script; english = English sentences; mixed = clearly both in one message.
+- intents: one per request, in order. A message can hold several: "installment plan kya hai?
+  photos bhi bhejo" = listing_question AND photos. Types:
+  search = looking for property ("Askari mein flat chahiye", giving budget/area/size);
+  listing_question = asking about a specific listing's details; availability = "available hai?";
+  photos / video = wants pictures / a video; more_options = wants other options;
+  negotiation = price reduction, "last price"; ask_human = wants a person/call;
+  legal_or_documents = registry, NOC, transfer, ownership; seller = wants to sell/rent out theirs.
 - A Zameen link or listing number: put it in listing.zameen_id.
 - "this one / the DHA one / the first one / the cheaper one": if you can tell which of
   LISTINGS_DISCUSSED it is, use its zameen_id; otherwise describe it in listing.from_history.
-- slot_updates: facts about what they want. source "stated" if they said it, "inferred" if implied
+- slot_updates: facts about what THEY want, only from what they say about their own needs.
+  Asking about a specific listing does NOT change what they want: never copy a listing's
+  area, type, size or price into slot_updates. source "stated" if they said it, "inferred" if implied
   (confidence below 0.7 for inferred).
-  * purpose: "sale" if they want to buy, "rent" if they want to rent. Never guess it.
+  * purpose: "sale" if they say they want to buy, "rent" if they say they want to rent.
+    Only when they say it (khareedna, buy, kiraye pe, rent); "chahiye" alone does not say which.
   * location_id: the id of the matching place in PLACES (choose the most specific that fits;
-    "Askari V" = "Askari 5", "Malir Cantt" = "Malir Cantonment"). If no place fits, use location_text.
+    "Askari V" = "Askari 5", "Malir Cantt" = "Malir Cantonment"). If the place they named is
+    not in PLACES (e.g. "Bahria Town", "Clifton"), put their words in location_text and do NOT
+    choose a broader place (a city or area that merely contains it) instead.
   * budget_min/budget_max: whole PKR. "4 cr tak" -> budget_max 40000000; "80 lakh" -> 8000000;
     a bare "4.5" in a house-buying chat means crore (inferred).
   * size in square yards: 1 marla = 25 sq yd, 1 kanal = 500 sq yd, sq ft / 9 = sq yd.

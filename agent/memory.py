@@ -24,6 +24,10 @@ async def remember(conn: AsyncConnection, lead_id: int, turn_id: int, *, ext: Ex
                      turn_id = EXCLUDED.turn_id, updated_at = now()""",
                 (lead_id, slot, Jsonb(v["value"]), v["confidence"], v["source"], turn_id))
 
+        if plan.clear_slots:
+            await conn.execute("DELETE FROM lead_slots WHERE lead_id = %s AND slot = ANY(%s)",
+                               (lead_id, plan.clear_slots))
+
         await conn.execute(
             """UPDATE open_questions SET status = 'answered'
                WHERE lead_id = %s AND status = 'open' AND slot = ANY(%s)""",

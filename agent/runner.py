@@ -25,6 +25,7 @@ class Facts:
     location: dict | None = None        # {"status": "match"|"ask"|"none", "text", "options"}
     unresolved_refs: list[dict] = field(default_factory=list)     # "which one?" candidates
     media: dict | None = None           # {"listing_id", "photo_count", "video_urls"}
+    stock_preview: dict | None = None   # {"for_sale": n, "for_rent": n, "asked_location": ...}
     tool_calls: list[dict] = field(default_factory=list)
 
     @property
@@ -35,9 +36,6 @@ class Facts:
             prices.update(v for v in (l.get("payment_plan") or {}).values() if isinstance(v, int) and v > 999)
         for r in (self.search or {}).get("results", []):
             prices.add(r["price_pkr"])
-        closest = (self.search or {}).get("closest_elsewhere")
-        if closest:
-            prices.add(closest["price_pkr"])
         return prices
 
 
@@ -55,8 +53,14 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, burst_t
         facts.location = {"status": status, "text": plan.location_text,
                           "options": [{"place_id": m.place_id, "name": m.name, "in": m.label} for m in matches]}
         _log(facts, "find_location", {"text": plan.location_text}, facts.location)
-        if status == "match" and plan.search is not None:
-            plan.search["location_id"] = matches[0].place_id
+        if status == "match":
+            for target in (plan.search, plan.preview):
+                if target is not None:
+                    target["location_id"] = matches[0].place_id
+            # Remember the place by its id from now on.
+            plan.slot_updates["location_id"] = {"value": matches[0].place_id, "source": "stated",
+                                                "confidence": 1.0}
+            plan.clear_slots = [s for s in plan.clear_slots if s != "location_id"]
 
     # Listings they mean.
     ids: list[int] = []
@@ -90,6 +94,17 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, burst_t
         _log(facts, "search_listings", plan.search,
              {"stage": facts.search["stage"], "total": facts.search["total"],
               "results": [r["zameen_id"] for r in facts.search["results"]]})
+
+    # Buy or rent not said yet: how much stock is there each way.
+    if plan.preview is not None:
+        counts = {}
+        for purpose in ("sale", "rent"):
+            criteria = Criteria(purpose=purpose, **{k: v for k, v in plan.preview.items() if v not in (None, [])})
+            result = await search_listings(conn, criteria)
+            counts[f"for_{purpose}"] = result["total"] if result["stage"] == "exact" else 0
+            counts["asked_location"] = result.get("asked_location")
+        facts.stock_preview = counts
+        _log(facts, "stock_preview", plan.preview, counts)
 
     # Media for the one listing they asked about.
     if (plan.want_photos or plan.want_video) and len(facts.listings) >= 1:

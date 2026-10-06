@@ -198,3 +198,30 @@ def test_search_with_nothing_in_the_sector_suggests_nearby_and_asks_one_thing(le
     slots = dict(q("SELECT slot, value FROM lead_slots WHERE lead_id = %s", lead))
     assert slots["budget_max"] == 50000000 and slots["purpose"] == "sale"
     assert q("SELECT slot FROM open_questions WHERE lead_id = %s AND status = 'open'", lead) == [("bedrooms_min",)]
+
+
+def test_an_agent_promise_without_a_handoff_is_rejected(lead):
+    lid = listing_id(PLOT)
+    llm = ScriptedLLM([ASKS_ABOUT_PLOT], [
+        ReplyDraft(reply="Ye plot PKR 85 Lakh ka hai. Agent aap se rabta karega.",
+                   listing_ids_mentioned=[lid], promises_agent_contact=True),
+        ReplyDraft(reply="Ye plot PKR 85 Lakh ka hai.", listing_ids_mentioned=[lid]),
+    ])
+    reply, turn_id = turn(lead, f"{PLOT} price?", llm)
+    assert reply.text == "Ye plot PKR 85 Lakh ka hai."
+    assert "no handoff was made" in llm.prompts["responder"][1][-1]["content"]
+
+
+def test_a_place_we_do_not_know_may_be_called_empty(lead):
+    ext = Extraction.model_validate({
+        "language": "roman_urdu", "intents": [{"type": "search"}],
+        "slot_updates": [
+            {"slot": "purpose", "value": "sale", "source": "stated", "confidence": 1},
+            {"slot": "location_text", "value": "Bahria Town", "source": "stated", "confidence": 1},
+            {"slot": "property_types", "value": ["house"], "source": "stated", "confidence": 1},
+        ],
+    })
+    llm = ScriptedLLM([ext], [ReplyDraft(reply="Bahria Town mein abhi hamari listings nahi hain.",
+                                         claims_no_listings=True)])
+    _, turn_id = turn(lead, "Bahria Town mein house?", llm)
+    assert q("SELECT validation->>'attempts' FROM turns WHERE id = %s", turn_id) == [("1",)]

@@ -9,6 +9,7 @@ validator can check the claims and the code can hand the rest to an agent.
 from __future__ import annotations
 
 import json
+import re
 
 from pydantic import BaseModel, Field
 
@@ -39,21 +40,36 @@ Hard rules:
 3. If the buyer asks something the FACTS do not answer (e.g. a feature the listing does not
    mention, fees, documents, discounts), say the listing does not mention it and the agent
    will confirm, and put that question in "unanswered". "Not mentioned" never means "no".
-4. Never negotiate, never hint at a discount, never promise anything.
+4. Never negotiate, never hint at a discount, never promise anything. On price talk say only
+   the listed price and that our agent will discuss the price with them: never say the price
+   is fixed, final, negotiable or that no discount is possible.
 5. Reply in the buyer's language and style: roman_urdu -> Roman Urdu, urdu -> Urdu script,
    english -> English, mixed -> follow the buyer.
 6. Order: first every item in MUST, then answer the buyer's questions, then at most ONE
    question (only the one in ASK, if any). Never ask more than one question.
 7. Keep it short and natural for WhatsApp (about 40-90 words; up to 3 listings as short
    lines with title, size, price and area). Plain text, *bold* allowed, no headings.
-8. If SEARCH says nothing was found in the asked place, say so honestly first, then offer
-   what was found nearby with its area and distance.
+8. Only say Trez has or does not have listings somewhere if FACTS say so: SEARCH (with
+   prices) or STOCK_PREVIEW (counts only, when the buyer has not said buy or rent yet). With
+   neither, do not claim anything about stock. If SEARCH found nothing in the asked place,
+   say so honestly first, then say the options are from the wider area named in
+   "shown_from_wider_area" and give each one's area and distance (distance_km).
+   Set "claims_no_listings" true whenever the reply says we have nothing (somewhere/of a kind).
 9. If HANDOFF is set, tell the buyer once that our agent will contact them shortly, and keep
    helping with facts meanwhile. If MEDIA is set, say the photos/video are coming next.
 10. If asked whether you are a bot: you are Trez Enterprises' assistant; offer the agent.
+11. Never promise an action that is not in this prompt: photos/video only if MEDIA is set;
+    "our agent will contact/confirm/discuss" only if HANDOFF is set, or for a question you put
+    in "unanswered", or for an "unverified" listing. If they asked for photos and MEDIA is not
+    set, say the photos are not available right now.
+12. Greet (salam / hello) only if GREET is true; otherwise start directly with the answer.
+13. Refer to a listing by its title, area or Zameen number (zameen_id), never by listing_id
+    (listing_id is internal, only for the JSON fields).
 
 Return JSON: {"reply": "...", "listing_ids_mentioned": [...], "says_available": [...],
-"unanswered": [...]} using the listing_id numbers from FACTS."""
+"unanswered": [...], "claims_no_listings": false, "promises_agent_contact": false}
+using the listing_id numbers from FACTS. Set "promises_agent_contact" true whenever the reply
+says our agent will contact them, call them, confirm or discuss something."""
 
 
 class ReplyDraft(BaseModel):
@@ -63,6 +79,8 @@ class ReplyDraft(BaseModel):
                                       description="listing_ids the reply calls available")
     unanswered: list[str] = Field(default_factory=list,
                                   description="buyer questions the FACTS could not answer")
+    claims_no_listings: bool = Field(False, description="the reply says Trez has nothing of a kind/somewhere")
+    promises_agent_contact: bool = Field(False, description="the reply says our agent will contact/confirm")
 
 
 def _listing_fact(l: dict) -> dict:
@@ -76,8 +94,13 @@ def _listing_fact(l: dict) -> dict:
     if l.get("amenities"):
         out["listing_says"] = {a["label"]: a["value"] for a in l["amenities"]}
     if l.get("payment_plan"):
-        out["installment_plan"] = {k: (pkr(v) if v > 999 else v) for k, v in l["payment_plan"].items()}
+        out["installment_plan"] = {_words(k): (pkr(v) if v > 999 else v) for k, v in l["payment_plan"].items()}
     return out
+
+
+def _words(key: str) -> str:
+    """Zameen's field names as words: 'ballotingFee' -> 'balloting fee'."""
+    return re.sub(r"(?<!^)(?=[A-Z])", " ", key).lower()
 
 
 def build_prompt(plan: Plan, facts: Facts, burst: list[dict], recent: list[dict],
@@ -94,14 +117,16 @@ def build_prompt(plan: Plan, facts: Facts, burst: list[dict], recent: list[dict]
                 "stage": facts.search["stage"],
                 "asked_location": facts.search.get("asked_location"),
                 "nothing_in_asked_location": facts.search.get("nothing_in_asked_location", False),
+                # Nothing in the asked place: these come from this wider area instead.
+                "shown_from_wider_area": facts.search.get("widened_to"),
                 "results": [_listing_fact(r) for r in facts.search["results"]],
-                "closest_elsewhere": _listing_fact(facts.search["closest_elsewhere"])
-                if facts.search.get("closest_elsewhere") else None,
             },
             "place": facts.location,
+            "stock_preview": facts.stock_preview,
             "which_listing_do_they_mean": [
                 {"options": [_listing_fact(c) for c in u["candidates"]]} for u in facts.unresolved_refs],
         },
+        "GREET": plan.greet,
         "ASK": ASK_HINTS.get(plan.ask) if plan.ask else None,
         "HANDOFF": plan.handoff["reason"] if plan.handoff else None,
         "MEDIA": facts.media,
