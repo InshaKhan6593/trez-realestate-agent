@@ -154,6 +154,10 @@ async def n_extract(state: TurnState, config) -> TurnState:
     words = [m["text"] for m in ctx.burst if m.get("text") and m.get("type") in ("text", "image", "video", "document")]
     if has_urdu_script(words):
         ext.language = "urdu"
+    elif words and ext.language == "urdu":
+        # "urdu" is Urdu script; with none of its letters it is Urdu in English letters
+        # (live run: "Assalam o alaikum" was answered in Urdu script).
+        ext.language = "roman_urdu"
     elif not words and ctx.language:
         ext.language = ctx.language
     texts = [m["text"] for m in ctx.burst if m.get("text")]

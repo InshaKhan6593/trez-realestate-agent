@@ -94,7 +94,8 @@ def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int],
         if "listing_id" in must and must["listing_id"] not in draft.listing_ids_mentioned:
             problems.append(f"a required update about listing {must['listing_id']} is missing")
 
-    found_nothing = facts.search is not None and not facts.search.get("results")
+    found_nothing = facts.search is not None and (not facts.search.get("results")
+                                                  or facts.search.get("no_exact_match", False))
     if found_nothing and not draft.claims_no_listings:
         # Live run: "Yeh list kar raha hoon" when the search had found nothing.
         problems.append("the search found nothing that matches; say so plainly (and set claims_no_listings)")

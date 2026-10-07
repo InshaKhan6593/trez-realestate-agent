@@ -75,6 +75,9 @@ Hard rules:
    rent: say which each one is (its "purpose"). If SEARCH has "already_shown_left_out", its
    results are listings they have not seen yet; if it has none in the asked place, say they have
    now seen everything there that matches before giving wider options.
+   If SEARCH has "no_exact_match", nothing fits everything they asked: say so plainly first
+   (set "claims_no_listings"), then give its results as the closest options, each with its real
+   price/size and how it differs from what they asked (its "differs_from_request").
    If FACTS do not show whether something exists or matches, do not claim either way.
 9. If HANDOFF is set, tell the buyer once that our agent will contact them shortly, and keep
    helping with facts meanwhile. If MEDIA is set, say the photos/video are coming next; a number
@@ -144,7 +147,21 @@ def _listing_fact(l: dict) -> dict:
         out["listing_says"] = {a["label"]: a["value"] for a in l["amenities"]}
     if l.get("payment_plan"):
         out["installment_plan"] = {_words(k): (pkr(v) if v > 999 else v) for k, v in l["payment_plan"].items()}
+    if l.get("differs_from_request"):
+        out["differs_from_request"] = [_asked(d) for d in l["differs_from_request"]]
     return out
+
+
+# How a closest listing differs from what the buyer asked, in the buyer's terms.
+_ASKED = {"budget_min": "budget from", "budget_max": "budget up to", "size_min_sqyd": "size at least",
+          "size_max_sqyd": "size at most", "bedrooms_min": "bedrooms at least"}
+
+
+def _asked(d: dict) -> dict:
+    v = d["asked"]
+    shown = pkr(v) if d["criterion"].startswith("budget") else (
+        f"{v:g} sq yd" if d["criterion"].startswith("size") else v)
+    return {"they_asked": f"{_ASKED[d['criterion']]} {shown}"}
 
 
 def _words(key: str) -> str:
@@ -174,6 +191,8 @@ def build_prompt(plan: Plan, facts: Facts, burst: list[dict], recent: list[dict]
                 # "More options": listings they have already seen are not in these results.
                 **({"already_shown_left_out": facts.search["already_shown_left_out"]}
                    if facts.search.get("already_shown_left_out") else {}),
+                # Nothing fits everything they asked: these are the closest, each saying how it differs.
+                **({"no_exact_match": True} if facts.search.get("no_exact_match") else {}),
                 "results": [_listing_fact(r) for r in facts.search["results"]],
             },
             "place": facts.location,

@@ -86,6 +86,17 @@ class Wants(BaseModel):
     "3 rooms + house" kept both 20/20 this way, 3/12 as a free list)."""
     model_config = ConfigDict(json_schema_extra=_all_required)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _bare_values(cls, data):
+        # Measured: the model sometimes writes a bare value ("location_id": 6655) and repeats it
+        # when told; that failed the whole extraction. A bare value quotes no evidence, so the
+        # evidence check drops it as not said, and the rest of the message still counts.
+        if isinstance(data, dict):
+            return {k: {"value": v, "said": "", "source": "inferred", "confidence": 0.0}
+                    if v is not None and not isinstance(v, dict) else v for k, v in data.items()}
+        return data
+
     purpose: Said | None = None
     property_types: Said | None = None
     location_id: Said | None = None

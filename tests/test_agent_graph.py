@@ -444,6 +444,14 @@ def test_urdu_script_is_answered_in_urdu_script(lead):
     assert q("SELECT language FROM leads WHERE id = %s", lead) == [("urdu",)]
 
 
+def test_urdu_in_english_letters_is_not_answered_in_urdu_script(lead):
+    # Live run: "Assalam o alaikum" was labelled urdu and answered in Urdu script.
+    ext = Extraction.model_validate({"language": "urdu", "intents": [{"type": "greeting"}]})
+    llm = ScriptedLLM([ext], [ReplyDraft(reply="Walaikum assalam")])
+    turn(lead, "Assalam o alaikum", llm)
+    assert json.loads(llm.prompts["responder"][0][1]["content"])["REPLY_IN"].startswith("Roman Urdu")
+
+
 def test_a_place_the_buyer_named_is_used_when_the_model_leaves_it_out(lead):
     # Live run: "Askari 6 villa rate?" -> the model recorded no place in half the runs.
     rows = q("""SELECT p.id, p.name FROM locations p JOIN listings l ON l.location_id = p.id

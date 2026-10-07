@@ -60,6 +60,7 @@ Rules:
     location_text and do NOT choose a broader place that merely contains it.
   * said: for every field you fill, copy the buyer's own words it comes from, exactly as written
     (for a place: just their name for it). We check places against these words.
+    The same words can give several fields (a size and a property type, say): fill each one.
   * property_types: list from house, flat, plot, commercial, portion (a flat may be called an
     apartment).
   * bedrooms_min: the number of bedrooms (or rooms) they ask for.

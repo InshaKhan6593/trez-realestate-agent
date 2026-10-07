@@ -287,3 +287,14 @@ def test_a_new_place_by_name_replaces_the_old_place():
     p = plan(state, ext("search", slots=[("location_text", "Bahria Town", "stated", 1.0)]))
     assert p.location_text == "Bahria Town" and "location_id" in p.clear_slots
     assert p.search["location_id"] is None        # not searched around the old place
+
+
+def test_a_bare_value_from_the_model_does_not_break_the_reading():
+    # Measured: "location_id": 6655 written without its evidence failed the whole extraction.
+    from agent.context import said_in
+    ext = Extraction.model_validate_json(
+        '{"language": "roman_urdu", "intents": [{"type": "search"}], "wants": {"location_id": 6655,'
+        ' "property_types": {"value": ["flat"], "said": "flat", "source": "stated", "confidence": 1}}}')
+    by_slot = {u.slot: u for u in ext.slot_updates}
+    assert by_slot["property_types"].value == ["flat"]
+    assert by_slot["location_id"].value == 6655 and not said_in(by_slot["location_id"].said, ["Askari 5 mein flat"])

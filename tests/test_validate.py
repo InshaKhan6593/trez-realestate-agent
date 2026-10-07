@@ -119,6 +119,17 @@ def test_a_search_that_found_nothing_is_said_plainly():
     assert check(honest, Plan(), facts, set()) == []
 
 
+def test_closest_options_are_introduced_as_not_an_exact_match():
+    facts = Facts(search={"stage": "closest", "no_exact_match": True, "total": 0,
+                          "results": [listing(42, 79_500_000)]})
+    as_if_exact = ReplyDraft(reply="Ye options hain.", listing_ids_mentioned=[42])
+    assert check(as_if_exact, Plan(), facts, set()) == [
+        "the search found nothing that matches; say so plainly (and set claims_no_listings)"]
+    honest = ReplyDraft(reply="Bilkul aisa nahi mila; sab se qareeb ye hai.", listing_ids_mentioned=[42],
+                        claims_no_listings=True)
+    assert check(honest, Plan(), facts, set()) == []
+
+
 def test_the_agent_may_be_mentioned_while_their_handoff_is_open():
     # Live run: "theek hai shukriya" after a visit request: the agent mention was rejected.
     draft = ReplyDraft(reply="Shukriya! Hamare agent jald rabta karenge.", promises_agent_contact=True)

@@ -135,6 +135,26 @@ def _matches(row: dict, c: Criteria) -> bool:
     return row["id"] not in c.exclude_listing_ids
 
 
+def _misses(row: dict, c: Criteria) -> list[dict]:
+    """The buyer's numeric wishes this listing does not meet, each with what they asked
+    and how far off it is (relative), so "closest" can be ranked and explained."""
+    size = float(row["size_sqyd"]) if row["size_sqyd"] is not None else None
+    out = []
+    for name, have, want, too_low in (
+            ("budget_min", row["price_pkr"], c.budget_min, True),
+            ("budget_max", row["price_pkr"], c.budget_max, False),
+            ("size_min_sqyd", size, c.size_min_sqyd, True),
+            ("size_max_sqyd", size, c.size_max_sqyd, False),
+            ("bedrooms_min", row["bedrooms"], c.bedrooms_min, True)):
+        if want is None:
+            continue
+        if have is None:
+            out.append({"criterion": name, "asked": want, "gap": 1.0})
+        elif (have < want) if too_low else (have > want):
+            out.append({"criterion": name, "asked": want, "gap": abs(have - want) / want if want else 1.0})
+    return out
+
+
 def _fit(row: dict, c: Criteria) -> float:
     """Lower is better: how far from what the buyer described."""
     target = c.budget_max or c.budget_min
@@ -159,7 +179,10 @@ async def search_listings(conn: AsyncConnection, c: Criteria, limit: int = SUGGE
                  Askari 5 -> Malir Cantonment -> Cantt -> Karachi); the first
                  level with matches is shown, closest first, each with its
                  distance and the level it came from, so the reply says so
-    3. none    : no match at any level (e.g. nothing of that type/budget at all)
+    3. closest : nothing fits everything anywhere: the listings nearest to it, same buy/rent
+                 and type, ranked by how few and how small their differences are (and
+                 nearness to the asked place); each says how it differs
+    4. none    : nothing of that kind at all
     Only listings the agent may call available are suggested.
     """
     if c.purpose not in ("sale", "rent"):
@@ -168,8 +191,8 @@ async def search_listings(conn: AsyncConnection, c: Criteria, limit: int = SUGGE
     now = datetime.now(timezone.utc)
     cur = conn.cursor(row_factory=dict_row)
     rows = await (await cur.execute(_SUMMARY_SQL + " WHERE l.status = 'available'")).fetchall()
-    fits = [r for r in rows
-            if _matches(r, c) and availability(r["status"], r["last_verified_at"], now) == "available"]
+    usable = [r for r in rows if availability(r["status"], r["last_verified_at"], now) == "available"]
+    fits = [r for r in usable if _matches(r, c)]
 
     def present(row, distance=None):
         out = _summary(row, tree, now)
@@ -178,10 +201,33 @@ async def search_listings(conn: AsyncConnection, c: Criteria, limit: int = SUGGE
         return out
 
     asked = tree.places.get(c.location_id) if c.location_id else None
+
+    def closest(base: dict) -> dict:
+        # Live run: "10 marla ghar, 5 crore" matched nothing, so the buyer's "show what you
+        # have" got another question. Keep buy/rent and type; the rest may differ, and says how.
+        same_kind = Criteria(purpose=c.purpose, property_types=c.property_types,
+                             exclude_listing_ids=c.exclude_listing_ids)
+        near = [(r, _misses(r, c)) for r in usable if _matches(r, same_kind)]
+        if not near:
+            return base
+
+        def rank(item):
+            r, misses = item
+            outside = asked is not None and not (r["location_id"] in tree.places
+                                                 and asked.id in tree.places[r["location_id"]].path)
+            d = _km(asked.lat, asked.lng, r["lat"], r["lng"]) if asked else None
+            return (len(misses), outside, sum(m["gap"] for m in misses), d if d is not None else float("inf"))
+
+        best = sorted(near, key=rank)[:limit]
+        return {**base, "stage": "closest", "no_exact_match": True, "results": [
+            {**present(r), "differs_from_request": [{k: m[k] for k in ("criterion", "asked")} for m in misses]}
+            for r, misses in best]}
+
     if asked is None:
         best = sorted(fits, key=lambda r: (_fit(r, c), -r["id"]))
-        return {"stage": "exact", "asked_location": None, "total": len(fits),
-                "results": [present(r) for r in best[:limit]]}
+        found = {"stage": "exact", "asked_location": None, "total": len(fits),
+                 "results": [present(r) for r in best[:limit]]}
+        return found if fits else closest(found)
 
     inside = [r for r in fits if r["location_id"] in tree.places
               and asked.id in tree.places[r["location_id"]].path]
@@ -207,8 +253,8 @@ async def search_listings(conn: AsyncConnection, c: Criteria, limit: int = SUGGE
                     "total": len(under),
                     "results": [present(r, km(r) if km(r) != float("inf") else None) for r in best[:limit]]}
 
-    return {"stage": "none", "asked_location": tree.label(asked.id),
-            "nothing_in_asked_location": True, "total": 0, "results": []}
+    return closest({"stage": "none", "asked_location": tree.label(asked.id),
+                    "nothing_in_asked_location": True, "total": 0, "results": []})
 
 
 # --------------------------------------------------------------------------

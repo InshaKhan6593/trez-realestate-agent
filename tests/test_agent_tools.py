@@ -108,6 +108,24 @@ def test_climbs_level_by_level_until_a_level_has_matches():
     assert distances == sorted(distances) and distances[0] > 10      # honest: it is far
 
 
+def test_nothing_fits_everything_so_the_closest_are_shown_with_how_they_differ():
+    # Live run: "10 marla ghar, 5 crore" matched nothing, and "show what you have" got a question.
+    # A budget below every house: the cheapest houses come first, each saying what it misses.
+    r = run(search_listings, Criteria("sale", ["house"], budget_max=1_000, size_min_sqyd=100))
+    assert r["stage"] == "closest" and r["no_exact_match"] and r["total"] == 0 and r["results"]
+    assert all(x["property_type"] == "house" and x["purpose"] == "sale" for x in r["results"])
+    assert all({"criterion": "budget_max", "asked": 1_000} in x["differs_from_request"] for x in r["results"])
+    prices = [x["price_pkr"] for x in r["results"]]
+    fewest = min(len(x["differs_from_request"]) for x in r["results"])
+    assert len(r["results"][0]["differs_from_request"]) == fewest
+    assert prices[0] == min(p for x, p in zip(r["results"], prices) if len(x["differs_from_request"]) == fewest)
+
+
+def test_the_closest_never_change_buy_or_rent_or_the_type():
+    r = run(search_listings, Criteria("sale", ["no-such-type"], budget_max=1_000))
+    assert r["stage"] == "exact" and r["results"] == []
+
+
 def test_purpose_is_never_assumed():
     with pytest.raises(ValueError):
         run(search_listings, Criteria("", ["house"]))

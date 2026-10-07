@@ -244,7 +244,7 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
 
 def _search_brief(search: dict) -> dict:
     out = {k: search.get(k) for k in ("stage", "total", "widened_to", "levels_up", "asked_location",
-                                      "already_shown_left_out") if k in search}
+                                      "already_shown_left_out", "no_exact_match") if k in search}
     out["results"] = [r["zameen_id"] for r in search["results"]]
     return out
 
