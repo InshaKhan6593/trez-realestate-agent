@@ -7,6 +7,7 @@ dependencies = [
     "arq>=0.28.0",
     "fastapi>=0.142.2",
     "httpx>=0.28",
+    "langfuse>=4.17",
     "langgraph>=1.2.14",
     "pillow>=11.0",
     "psycopg-pool>=3.3.3",

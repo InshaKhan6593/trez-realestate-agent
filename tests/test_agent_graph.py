@@ -8,12 +8,15 @@ Skipped when local Supabase with listings is not available.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 import psycopg
 import pytest
 
 from agent.graph import agent_reply
+from agent.locations import load_tree, place_choices, places_named
+from agent.money import pkr
 from agent.respond import ReplyDraft
 from agent.schemas import Extraction
 
@@ -210,6 +213,172 @@ def test_an_agent_promise_without_a_handoff_is_rejected(lead):
     reply, turn_id = turn(lead, f"{PLOT} price?", llm)
     assert reply.text == "Ye plot PKR 85 Lakh ka hai."
     assert "no handoff was made" in llm.prompts["responder"][1][-1]["content"]
+
+
+def _three_available():
+    return q("SELECT id, zameen_id, price_pkr FROM listings WHERE status = 'available' ORDER BY id LIMIT 3")
+
+
+SEARCH = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}], "slot_updates": [
+    {"slot": "purpose", "value": "sale", "source": "stated", "confidence": 1}]})
+
+
+def test_the_first_one_means_the_first_in_our_last_reply(lead):
+    # Live run, turn 4: "pehle wale" could not be matched, because the listings
+    # were handed to the extractor by time, and all three were shown at once.
+    rows = _three_available()
+    order = [rows[2][0], rows[0][0], rows[1][0]]           # the reply's order, not the database's
+    first_zameen = rows[2][1]
+    asks_first = Extraction.model_validate({"language": "roman_urdu", "intents": [
+        {"type": "listing_question", "listing": {"zameen_id": first_zameen}}]})
+    llm = ScriptedLLM([SEARCH, asks_first], [
+        ReplyDraft(reply="Ye teen options hain: ...", listing_ids_mentioned=order),
+        ReplyDraft(reply="Ji, is ki tafseel ye hai.", listing_ids_mentioned=[rows[2][0]]),
+    ])
+    turn(lead, "khareedna hai", llm)
+    turn(lead, "pehle wale ka size?", llm)
+    payload = json.loads(llm.prompts["extractor"][1][1]["content"])
+    assert [i["zameen_id"] for i in payload["OUR_LAST_LIST"]] == [rows[2][1], rows[0][1], rows[1][1]]
+    assert payload["OUR_LAST_LIST"][0]["n"] == 1
+
+
+def test_an_unclear_listing_is_asked_about_not_guessed(lead):
+    rows = _three_available()
+    llm = ScriptedLLM([SEARCH, Extraction.model_validate({"language": "roman_urdu", "intents": [
+        {"type": "listing_question", "listing": {"from_history": "wo wala"}}]})], [
+        ReplyDraft(reply="Ye options hain.", listing_ids_mentioned=[r[0] for r in rows]),
+        # Quotes the candidates' real prices to ask which one: allowed.
+        ReplyDraft(reply=f"{pkr(rows[0][2])} wala ya {pkr(rows[1][2])} wala?",
+                   listing_ids_mentioned=[rows[0][0], rows[1][0]]),
+    ])
+    turn(lead, "khareedna hai", llm)
+    with psycopg.connect(DB_URL, autocommit=True) as conn:      # listings this buyer has seen
+        for r in rows:
+            conn.execute("""INSERT INTO lead_listings (lead_id, listing_id, relation, status_shown, price_shown)
+                            VALUES (%s, %s, 'shown', 'available', %s) ON CONFLICT DO NOTHING""", (lead, r[0], r[2]))
+    reply, turn_id = turn(lead, "wo wala kitne ka hai?", llm)
+    assert "ya" in reply.text
+    plan, validation = q("SELECT plan, validation FROM turns WHERE id = %s", turn_id)[0]
+    assert plan["ask"] == "which_listing" and validation["attempts"] == 1
+    # "which one?" is not a fact about the buyer: no open question is stored for it.
+    assert ("which_listing",) not in q("SELECT slot FROM open_questions WHERE lead_id = %s", lead)
+
+
+def test_with_nothing_safe_to_say_the_agent_gets_the_message(lead):
+    # Live run, turn 4: the template had no facts and sent an empty message.
+    ext = Extraction.model_validate({"language": "roman_urdu", "intents": [
+        {"type": "listing_question", "listing": {"from_history": "jo kal dekha tha"}}]})
+    llm = ScriptedLLM([ext], [ReplyDraft(reply="Wo PKR 3 Crore ka hai."),
+                              ReplyDraft(reply="Wo PKR 3.2 Crore ka hai.")])
+    reply, turn_id = turn(lead, "jo kal dekha tha wo kitne ka hai?", llm)
+    assert reply.text == "Hamare agent jald aap se rabta karenge."
+    assert reply.alert and "jo kal dekha tha wo kitne ka hai?" in reply.alert["text"]
+    assert q("SELECT reason FROM handoffs WHERE lead_id = %s", lead) == [("not_in_data",)]
+
+
+def test_a_token_offer_on_the_listing_being_discussed(lead):
+    # Live run, turn 7: the listing was not loaded, so its true price was
+    # rejected twice; the lead stayed warm; the reason read "asked for human".
+    lid = listing_id(PLOT)
+    offer = Extraction.model_validate({"language": "roman_urdu", "intents": [
+        {"type": "negotiation", "question": "80 lakh final karein?"}, {"type": "ask_human"}],
+        "signals": ["token_or_bayana"]})
+    llm = ScriptedLLM([ASKS_ABOUT_PLOT, offer], [
+        ReplyDraft(reply="Ye plot PKR 85 Lakh ka hai.", listing_ids_mentioned=[lid]),
+        ReplyDraft(reply="Listed price PKR 85 Lakh hai; aap ka PKR 80 Lakh ka offer agent tak pohanch jayega, "
+                         "woh jald rabta karenge.", listing_ids_mentioned=[lid], promises_agent_contact=True),
+    ])
+    turn(lead, f"{PLOT} installments? photos?", llm)
+    reply, turn_id = turn(lead, "80 lakh final karein to aaj token de dun", llm)
+    tools, validation = q("SELECT tool_calls, validation FROM turns WHERE id = %s", turn_id)[0]
+    assert "get_listing" in [t["tool"] for t in tools] and validation["attempts"] == 1
+    assert q("SELECT priority FROM leads WHERE id = %s", lead) == [("hot",)]
+    assert reply.alert["text"].startswith("🔥 HOT") and "Reason: ready to pay (also: negotiation" in reply.alert["text"]
+    assert "ready to pay a token" in reply.alert["text"]
+
+
+def test_a_link_is_found_in_code_even_when_the_model_misses_it(lead):
+    # Live run: the extractor returned zameen_id null for a message with a Zameen link,
+    # and the bot said "I couldn't find the listing you shared".
+    lid = listing_id(PLOT)
+    missed = Extraction.model_validate({"language": "roman_urdu", "intents": [
+        {"type": "availability", "listing": {"from_history": "the listing in the link"}}]})
+    llm = ScriptedLLM([missed], [ReplyDraft(reply="Ji, ye plot PKR 85 Lakh ka hai aur available hai.",
+                                            listing_ids_mentioned=[lid], says_available=[lid])])
+    reply, turn_id = turn(lead, f"https://www.zameen.com/Property/x-{PLOT}-1345-1.html ye available hai? "
+                                "call 03001234567", llm)
+    tools, validation = q("SELECT tool_calls, validation FROM turns WHERE id = %s", turn_id)[0]
+    resolved = [t["result"] for t in tools if t["tool"] == "resolve_listing"]
+    assert resolved == [{"match": lid, "how": "zameen_id", "candidates": [PLOT]}]   # the phone number did not count
+    assert validation["attempts"] == 1
+
+
+def _ambiguous_place_name():
+    """A word that fits several of today's places (e.g. "Emaar" for Emaar Panorama
+    and Emaar The Views), found from the live places, so the test follows the
+    stock instead of assuming it. -> (word, {place_id: name}) or None."""
+    async def go():
+        async with await psycopg.AsyncConnection.connect(DB_URL, autocommit=True) as conn:
+            tree, offered = await load_tree(conn), {c["id"] for c in await place_choices(conn)}
+            for word in sorted({tree.places[i].name.split()[0] for i in offered}):
+                named = places_named(tree, word, offered)
+                if len(named) > 1:
+                    return word, {i: tree.places[i].name for i in named}
+        return None
+    return asyncio.run(go(), loop_factory=asyncio.SelectorEventLoop)
+
+
+def _place_search(word, **slots):
+    return Extraction.model_validate({"language": "english", "intents": [{"type": "search"}],
+                                      "slot_updates": [{"slot": "purpose", "value": "sale", "source": "stated",
+                                                        "confidence": 1}] + [
+                                          {"slot": k, "value": v, "said": word, "source": "stated", "confidence": 1}
+                                          for k, v in slots.items()]})
+
+
+def test_words_naming_one_place_overrule_a_different_pick(lead):
+    # Live run: "askari mein ghar" was picked as DHA Defence. If the buyer's words name
+    # exactly one of our places, a pick outside it is replaced by that place.
+    rows = q("""SELECT l.location_id, p.name FROM listings l JOIN locations p ON p.id = l.location_id
+                WHERE l.status = 'available' AND l.purpose = 'sale' GROUP BY 1, 2 ORDER BY count(*) DESC LIMIT 2""")
+    (right, name), (wrong, _) = rows
+    llm = ScriptedLLM([_place_search(name, location_id=wrong)], [ReplyDraft(reply="Ye options hain.")])
+    _, turn_id = turn(lead, f"{name} mein khareedna hai", llm)
+    plan, tools = q("SELECT plan, tool_calls FROM turns WHERE id = %s", turn_id)[0]
+    assert plan["search"]["location_id"] == right
+    assert tools[0]["tool"] == "check_place" and tools[0]["result"]["verdict"] == "use_named"
+
+
+@pytest.mark.parametrize("model_reads", ["as text", "as one place's id"])
+def test_a_name_that_fits_several_places_is_asked_not_searched_everywhere(lead, model_reads):
+    # Live runs: "Emaar" fits Emaar Panorama and Emaar The Views. Read as text, the search
+    # ran across all of Karachi; read as an id, the model had quietly picked one tower.
+    found = _ambiguous_place_name()
+    if found is None:
+        pytest.skip("no place name in today's stock fits several places")
+    word, options = found
+    slot = {"location_text": word} if model_reads == "as text" else {"location_id": next(iter(options))}
+    llm = ScriptedLLM([_place_search(word, **slot)], [ReplyDraft(reply="Which one do you mean?")])
+    reply, turn_id = turn(lead, f"I want to buy in {word}", llm)
+    plan, tools = q("SELECT plan, tool_calls FROM turns WHERE id = %s", turn_id)[0]
+    assert plan["ask"] == "which_place" and plan["search"] is None
+    assert [t["tool"] for t in tools] in (["find_location"], ["check_place"])
+    facts = json.loads(llm.prompts["responder"][0][1]["content"])["FACTS"]
+    assert {o["place_id"] for o in facts["place"]["options"]} == set(options)
+    assert "location_id" not in dict(q("SELECT slot, value FROM lead_slots WHERE lead_id = %s", lead))
+    # The answer ("Emaar Panorama") fills the place: that is the open question next turn
+    # (live run: without it, the answer was read as a listing and went unanswered).
+    assert q("SELECT slot FROM open_questions WHERE lead_id = %s AND status = 'open'", lead) == [("location_id",)]
+
+
+def test_asking_again_leaves_one_open_question(lead):
+    greet = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}]})
+    llm = ScriptedLLM([greet, greet], [ReplyDraft(reply="Buy karna hai ya rent?"),
+                                       ReplyDraft(reply="Buy ya rent?")])
+    turn(lead, "ghar chahiye", llm)
+    turn(lead, "house dikhayein", llm)
+    assert q("SELECT slot, status FROM open_questions WHERE lead_id = %s ORDER BY id", lead) == [
+        ("purpose", "dropped"), ("purpose", "open")]
 
 
 def test_a_place_we_do_not_know_may_be_called_empty(lead):

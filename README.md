@@ -24,6 +24,15 @@ exactly like one three seconds later.
 Location requests follow Zameen's own place tree: the exact place first; if it has nothing, the
 closest matches from one level up, then the next, always saying where they are and how far.
 
+## Tracing
+Every buyer turn is one [Langfuse](https://langfuse.com) trace, and each buyer is one session, so a
+conversation reads turn by turn. A trace shows what the buyer sent (voice notes play inline once
+transcription is built), what the agent already knew, what the extractor understood (exact prompt,
+answer, tokens, cost), what the code decided, every tool with its arguments and result, each reply
+draft and why the validator passed or rejected it, and what was sent to the buyer and the agent.
+Scores (`reply-passed`, `used-template`, `handoff`, `fit`, `intent`, `outcome`) make problems filterable.
+Phone numbers are masked. Tracing is off when the Langfuse keys in `.env` are empty.
+
 ## Stack
 Python (FastAPI, arq, LangGraph, psycopg) · Supabase (Postgres, Storage) · Redis · models via
 OpenRouter (chosen in `.env`) · Node + Playwright for the scraper · Meta WhatsApp Cloud API.
@@ -43,8 +52,11 @@ cd scraper && npm ci && node scrape-zameen.mjs --output-dir ../data/raw/$(date +
 uv run python -m sync.ingest data/raw/$(date +%Y-%m-%d)
 
 uv run python -m scripts.chat              # talk to the agent as a buyer (nothing is sent on WhatsApp)
-uv run pytest                              # 109 tests
+uv run pytest                              # 145 tests
 ```
+
+Traces: Langfuse Cloud (keys in `.env`) or locally with
+`docker compose -f observability/docker-compose.yml up -d` (UI on http://localhost:3000).
 
 Serving WhatsApp: `uv run python -m app.serve` (webhook) and `uv run arq app.worker.WorkerSettings`
 (worker). Without a WhatsApp token, replies are recorded as not sent.

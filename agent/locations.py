@@ -3,16 +3,19 @@
 The tree is exactly Zameen's hierarchy (Pakistan > Sindh > Karachi > Cantt >
 Malir Cantonment > Askari 5 > Askari 5 - Sector J), loaded from the listings.
 
-No hand-written alias table. Two layers:
+No hand-written alias table. Three layers:
   1. The extractor model is given the real place names (place_choices) and
      picks one by id; it understands "Askari V", "ask 6", "malir cantt".
      The code only accepts an id that exists in the tree.
-  2. find_location is a conservative backup for plain typos: whole-name
+  2. places_named checks the buyer's own words against today's places: words
+     that fit several places ("Emaar", "Askari") are asked about, never guessed.
+  3. find_location is a conservative backup for plain typos: whole-name
      similarity, so a shared generic word ("town") cannot make a match.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from psycopg import AsyncConnection
@@ -123,6 +126,30 @@ async def place_choices(conn: AsyncConnection) -> list[dict]:
         ancestors = tree.label(place.id).split(", ")[1:]
         out.append({"id": place.id, "name": place.name, "in": ", ".join(ancestors)})
     return out
+
+
+def _plain(text: str) -> str:
+    return " ".join(re.sub(r"[^0-9a-z]+", " ", (text or "").lower()).split())
+
+
+def places_named(tree: Tree, words: str, among: set[int] | None = None) -> list[int]:
+    """Which places do the buyer's words name? Decided from the live tree, so a
+    new project with two towers is handled like Emaar Panorama / The Views today.
+
+    A place whose full name is the words wins alone. Otherwise every place whose
+    name contains the words as whole words ("emaar" in "Emaar Panorama"), minus
+    places inside another one found (the outer place covers them). More than one
+    left means the words fit several places: the buyer is asked which."""
+    w = _plain(words)
+    if not w:
+        return []
+    pool = [p for p in tree.places.values() if among is None or p.id in among]
+    exact = [p.id for p in pool if _plain(p.name) == w]
+    if exact:
+        return exact[:1]
+    hits = [p for p in pool if f" {w} " in f" {_plain(p.name)} "]
+    found = {p.id for p in hits}
+    return [p.id for p in sorted(hits, key=lambda p: p.name) if not any(a in found for a in p.path[:-1])]
 
 
 def decide(matches: list[PlaceMatch]) -> str:

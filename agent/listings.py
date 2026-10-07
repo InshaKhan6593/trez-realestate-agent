@@ -229,7 +229,7 @@ async def resolve_listing(conn: AsyncConnection, lead_id: int | None, *,
     now = datetime.now(timezone.utc)
     cur = conn.cursor(row_factory=dict_row)
 
-    numbers = [int(n) for n in re.findall(r"\d{6,}", text or "")]
+    numbers = _numbers(text)
     if numbers:
         rows = await (await cur.execute(_SUMMARY_SQL + " WHERE l.zameen_id = ANY(%s)", (numbers,))).fetchall()
         if rows:
@@ -250,3 +250,19 @@ async def resolve_listing(conn: AsyncConnection, lead_id: int | None, *,
         rows = [r for r in rows if r["property_type"] == property_type]
     return {"match": rows[0]["id"] if len(rows) == 1 else None, "how": "buyer_history",
             "candidates": [_summary(r, tree, now) for r in rows[:5]]}
+
+
+def _numbers(text: str | None) -> list[int]:
+    return [int(n) for n in re.findall(r"\d{6,}", text or "")]
+
+
+async def zameen_ids_in(conn: AsyncConnection, text: str | None) -> list[int]:
+    """Our listings' Zameen ids that appear in the buyer's own words (a link or
+    a listing number), in order. Only ids of our listings count, so a phone
+    number or a price never matches; no URL format is assumed."""
+    numbers = _numbers(text)
+    if not numbers:
+        return []
+    ours = {r[0] for r in await (await conn.execute(
+        "SELECT zameen_id FROM listings WHERE zameen_id = ANY(%s)", (numbers,))).fetchall()}
+    return [n for n in dict.fromkeys(numbers) if n in ours]

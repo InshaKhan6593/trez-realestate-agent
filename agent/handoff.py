@@ -55,7 +55,8 @@ async def build_context(conn: AsyncConnection, lead_id: int) -> dict:
     return {
         "lead": lead,
         "wants": [{"slot": s["slot"], "value": s["value"], "source": s["source"],
-                   "confidence": s["confidence"], "updated_at": s["updated_at"]} for s in slots],
+                   "confidence": s["confidence"], "updated_at": s["updated_at"],
+                   "text": want_text(s["slot"], s["value"], tree)} for s in slots],
         "listings": [{
             "zameen_id": r["zameen_id"], "title": r["title"], "url": r["url"],
             "location": tree.label(r["location_id"]) if r["location_id"] in tree.places else None,
@@ -72,21 +73,67 @@ async def build_context(conn: AsyncConnection, lead_id: int) -> dict:
 def _pkr(n: int | None) -> str:
     if n is None:
         return "?"
+    trim = lambda x: f"{x:.2f}".rstrip("0").rstrip(".")  # noqa: E731
     if n >= 10**7:
-        return f"PKR {n / 10**7:.2f} Cr".replace(".00 ", " ")
+        return f"PKR {trim(n / 10**7)} Cr"
     if n >= 10**5:
-        return f"PKR {n / 10**5:.2f} lakh".replace(".00 ", " ")
+        return f"PKR {trim(n / 10**5)} lakh"
     return f"PKR {n:,}"
 
 
-def format_alert(ctx: dict, reason: str, open_items: list[str]) -> str:
+# What the buyer wants, as the agent would say it. Order = how an agent reads a lead.
+_WANT_ORDER = ["ready_to_pay", "purpose", "property_types", "location_id", "location_text", "budget_min",
+               "budget_max", "size_min_sqyd", "size_max_sqyd", "bedrooms_min", "timeline", "payment_mode",
+               "use", "decision_maker"]
+_WORDS = {
+    "purpose": {"sale": "buy", "rent": "rent"},
+    "timeline": {"under_1_month": "within a month", "1_3_months": "in 1-3 months",
+                 "3_6_months": "in 3-6 months", "browsing": "just browsing"},
+    "payment_mode": {"cash": "pays cash", "installments": "wants installments", "bank_loan": "bank loan",
+                     "selling_first": "selling another property first"},
+    "use": {"live": "to live in", "invest": "to invest"},
+    "decision_maker": {"self": "decides alone", "with_family": "decides with family",
+                       "for_someone_else": "buying for someone else"},
+}
+# Questions the bot is waiting on, as words.
+_ASKED = {"purpose": "buy or rent", "location_id": "area", "property_types": "property type",
+          "budget_max": "budget", "bedrooms_min": "bedrooms", "timeline": "timeline",
+          "payment_mode": "cash or installments", "decision_maker": "who decides"}
+
+
+def want_text(slot: str, value, tree) -> str:
+    """One thing the buyer wants, in words: 'up to PKR 8.50 Cr', 'Askari 6',
+    '5+ bedrooms'. A slot without wording here still shows, as 'slot: value'."""
+    if slot in _WORDS:
+        return _WORDS[slot].get(str(value), f"{slot.replace('_', ' ')}: {value}")
+    if slot == "ready_to_pay":
+        return "ready to pay a token"
+    if slot == "property_types":
+        return "/".join(value) if isinstance(value, list) else str(value)
+    if slot == "location_id":
+        return tree.label(value).split(", ")[0] if value in tree.places else f"place {value}"
+    if slot == "location_text":
+        return f"{value} (not one of our places)"
+    if slot in ("budget_min", "budget_max") and isinstance(value, int | float):
+        return ("from " if slot == "budget_min" else "up to ") + _pkr(int(value))
+    if slot in ("size_min_sqyd", "size_max_sqyd") and isinstance(value, int | float):
+        return ("from " if slot == "size_min_sqyd" else "up to ") + f"{value:g} sq yd"
+    if slot == "bedrooms_min":
+        return f"{value}+ bedrooms"
+    return f"{slot.replace('_', ' ')}: {value}"
+
+
+def format_alert(ctx: dict, reason: str, open_items: list[str], also: list[str] | None = None) -> str:
     """The WhatsApp message the agent gets. Plain facts from the database."""
     lead = ctx["lead"]
     head = {"hot": "🔥 HOT", "warm": "WARM"}.get(lead["priority"] or "", "Lead")
-    lines = [f"{head}: {lead['name'] or 'Buyer'} (+{lead['phone']}). Reason: {reason.replace('_', ' ')}."]
-    if ctx["wants"]:
-        lines.append("Wants: " + "; ".join(
-            f"{w['slot']} = {w['value']}{'' if w['source'] == 'stated' else ' (inferred)'}" for w in ctx["wants"]))
+    why = reason.replace("_", " ") + (f" (also: {', '.join(r.replace('_', ' ') for r in also)})" if also else "")
+    lines = [f"{head}: {lead['name'] or 'Buyer'} (+{lead['phone']}). Reason: {why}."]
+    wants = sorted((w for w in ctx["wants"] if w["slot"] != "name"),
+                   key=lambda w: _WANT_ORDER.index(w["slot"]) if w["slot"] in _WANT_ORDER else len(_WANT_ORDER))
+    if wants:
+        lines.append("Wants: " + " · ".join(
+            w["text"] + ("" if w["source"] == "stated" else " (guess)") for w in wants))
     for item in ctx["listings"][:5]:
         changed = ""
         if item["price_shown"] and item["price_now"] != item["price_shown"]:
@@ -97,7 +144,8 @@ def format_alert(ctx: dict, reason: str, open_items: list[str]) -> str:
     if open_items:
         lines.append("Bot could not answer: " + "; ".join(open_items))
     if ctx["waiting_for_buyer"]:
-        lines.append("Still waiting to hear: " + ", ".join(ctx["waiting_for_buyer"]))
+        lines.append("Bot asked, no answer yet: " + ", ".join(
+            dict.fromkeys(_ASKED.get(s, s.replace("_", " ")) for s in ctx["waiting_for_buyer"])))
     last_in = next((m["text"] for m in reversed(ctx["recent_messages"])
                     if m["direction"] == "in" and m["text"]), None)
     if last_in:
@@ -125,9 +173,10 @@ async def _pick_agent(cur, lead_id: int) -> dict | None:
 
 
 async def request_handoff(conn: AsyncConnection, lead_id: int, reason: str,
-                          open_items: list[str] | None = None) -> HandoffRequest:
+                          open_items: list[str] | None = None, also: list[str] | None = None) -> HandoffRequest:
     """Alert an agent. If a handoff is already open, add the new items to it
-    instead of opening another (the agent gets one thread, not a flood)."""
+    instead of opening another (the agent gets one thread, not a flood).
+    `also`: the other reasons this turn, shown after the main one."""
     open_items = [i for i in (open_items or []) if i]
     cur = conn.cursor(row_factory=dict_row)
     async with conn.transaction():
@@ -139,11 +188,11 @@ async def request_handoff(conn: AsyncConnection, lead_id: int, reason: str,
             (lead_id,))).fetchone()
         if existing:
             items = list(dict.fromkeys([*existing["open_items"], *open_items]))
-            alert = format_alert(ctx, reason, items)
+            alert = format_alert(ctx, reason, items, also)
             await cur.execute("UPDATE handoffs SET open_items = %s, summary = %s WHERE id = %s",
                               (Jsonb(items), alert, existing["id"]))
             return HandoffRequest(existing["id"], agent, alert, new=False)
-        alert = format_alert(ctx, reason, open_items)
+        alert = format_alert(ctx, reason, open_items, also)
         handoff_id = (await (await cur.execute(
             """INSERT INTO handoffs (lead_id, reason, summary, open_items, agent_id)
                VALUES (%s, %s, %s, %s, %s) RETURNING id""",

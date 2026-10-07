@@ -114,10 +114,11 @@ def test_request_alerts_an_agent_with_full_context(lead):
     assert _state(lead_id) == ("requested", fahad)
     alert = req.alert
     assert "Ahmed" in alert and "negotiation" in alert
-    assert "budget_max = 10000000" in alert                       # what the buyer said
+    assert "Wants: up to PKR 1 Cr" in alert                       # what the buyer said, in words
+    assert "budget_max" not in alert                              # no internal names
     assert "54467403" in alert and "was PKR 80 lakh when shown" in alert   # price changed since shown
     assert "Can the price come down?" in alert                    # what the bot could not answer
-    assert "timeline" in alert                                    # still waiting to hear
+    assert "no answer yet: timeline" in alert                     # still waiting to hear
     assert "last price kya hai?" in alert                         # the latest message
 
 
