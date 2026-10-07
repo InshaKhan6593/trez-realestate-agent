@@ -51,10 +51,11 @@ def get_settings() -> Settings:
     return Settings(
         database_url=env("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres"),
         redis_url=env("REDIS_URL", "redis://127.0.0.1:6379/0"),
-        whatsapp_app_secret=env("WHATSAPP_APP_SECRET", ""),
-        whatsapp_verify_token=env("WHATSAPP_VERIFY_TOKEN", ""),
-        whatsapp_access_token=env("WHATSAPP_ACCESS_TOKEN", ""),
-        whatsapp_phone_number_id=env("WHATSAPP_PHONE_NUMBER_ID", ""),
+        # Stripped: a value pasted into a dashboard can carry a trailing space or line break.
+        whatsapp_app_secret=env("WHATSAPP_APP_SECRET", "").strip(),
+        whatsapp_verify_token=env("WHATSAPP_VERIFY_TOKEN", "").strip(),
+        whatsapp_access_token=env("WHATSAPP_ACCESS_TOKEN", "").strip(),
+        whatsapp_phone_number_id=env("WHATSAPP_PHONE_NUMBER_ID", "").strip(),
         whatsapp_api_version=env("WHATSAPP_API_VERSION", "v23.0"),
         whatsapp_alert_template=env("WHATSAPP_ALERT_TEMPLATE", ""),
         whatsapp_alert_template_language=env("WHATSAPP_ALERT_TEMPLATE_LANGUAGE", "en"),

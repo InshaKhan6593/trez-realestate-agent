@@ -67,6 +67,11 @@ async def receive(request: Request) -> dict:
     raw = await request.body()
     if not signature_ok(raw, request.headers.get("X-Hub-Signature-256"),
                         settings.whatsapp_app_secret):
+        # Never the secret itself: only enough to tell "not set" from "a different value"
+        # (a secret from another Meta app fails every message).
+        log.warning("webhook signature rejected: app secret %s, signature header %s",
+                    f"set ({len(settings.whatsapp_app_secret)} chars)" if settings.whatsapp_app_secret else "NOT SET",
+                    "present" if request.headers.get("X-Hub-Signature-256") else "missing")
         raise HTTPException(status_code=401, detail="bad signature")
 
     inbound, statuses = parse_webhook(json.loads(raw))
