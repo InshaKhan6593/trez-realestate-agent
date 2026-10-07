@@ -57,7 +57,8 @@ AGENT_WORDS = ("agent", "ایجنٹ")
 
 
 def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int],
-          internal_words: set[str] = frozenset(), *, handoff_open: bool = False) -> list[str]:
+          internal_words: set[str] = frozenset(), *, handoff_open: bool = False,
+          unreadable_sent: bool = False) -> list[str]:
     problems: list[str] = []
     # The model's own JSON pasted into the message (live run: 'Filename: data.json {"reply": ...').
     if any(f in draft.reply for f in INTERNAL_FIELDS):
@@ -77,6 +78,11 @@ def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int],
     # Visits are arranged by the agent only (live run: "Aap kal dekhne aa sakte hain").
     if draft.promises_visit:
         problems.append("the reply arranges or confirms a visit; only our agent arranges visits, say they will")
+    # "I can't see the image" is true only for a picture or voice note they actually sent
+    # (live: the typed word "image?" got it). Code knows the message types.
+    if draft.says_cannot_see and not unreadable_sent:
+        problems.append("they sent no picture, voice note or file, only text: answer what they wrote "
+                        "(asking for pictures means they want photos of a listing)")
     # Only the agent decides on price (live run: "wo 8.5 crore pe nahi de sakte" to a token offer).
     if draft.judges_price:
         problems.append("the reply accepts, refuses or judges their offer, or says whether the price can change; "

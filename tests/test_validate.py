@@ -280,3 +280,12 @@ def test_only_the_agent_decides_on_an_offer():
     assert check(refused, Plan(), Facts(), set()) == [
         "the reply accepts, refuses or judges their offer, or says whether the price can change; "
         "only our agent decides that: give the listed price and say the agent will discuss it"]
+
+
+def test_cannot_see_is_said_only_about_something_they_sent():
+    # Live: the typed word "image?" got "I can't see the image yet".
+    draft = ReplyDraft(reply="I can't see the image yet.", says_cannot_see=True)
+    assert check(draft, Plan(), Facts(), set()) == [
+        "they sent no picture, voice note or file, only text: answer what they wrote "
+        "(asking for pictures means they want photos of a listing)"]
+    assert check(draft, Plan(), Facts(), set(), unreadable_sent=True) == []

@@ -32,7 +32,8 @@ Rules:
   search = looking for property, or asking about a kind of property in a place (prices, what
   is there) when no particular listing has been discussed; listing_question = about one
   particular listing's details; availability = whether a listing is still available;
-  photos / video; more_options = wants to see other or more listings; negotiation = asking
+  photos = wants to see pictures of a listing; video = wants a video of it (asking for
+  them is never other); more_options = wants to see other or more listings; negotiation = asking
   for a lower price or the last price; ask_human = wants a person or a call;
   legal_or_documents = registry, NOC, transfer, title, ownership; seller = wants to sell or
   rent out their own property; other = anything else.

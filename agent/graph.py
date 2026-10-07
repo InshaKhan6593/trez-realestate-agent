@@ -281,7 +281,8 @@ async def n_check(state: TurnState, config) -> TurnState:
     with trace.step("check-reply", as_type="guardrail", input=draft.model_dump(),
                     metadata={"attempt": state["attempts"]}) as obs:
         problems = check(draft, state["plan"], state["facts"], buyer_amounts, state.get("prompt_words", set()),
-                         handoff_open=state["ctx"].state.handoff_state != "none")
+                         handoff_open=state["ctx"].state.handoff_state != "none",
+                         unreadable_sent=bool(unheard(state["ctx"].burst)))
         obs.update(output={"passed": not problems, "problems": problems},
                    level="WARNING" if problems else None,
                    status_message="; ".join(problems)[:500] if problems else None)

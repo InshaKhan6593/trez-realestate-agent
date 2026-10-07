@@ -109,12 +109,13 @@ Hard rules:
 Return JSON: {"reply": "...", "listing_ids_mentioned": [...], "says_available": [...],
 "unanswered": [...], "claims_no_listings": false, "promises_agent_contact": false,
 "promises_media": false, "says_no_photos": false, "photos_coming_said": null, "promises_visit": false,
-"features_said": [], "judges_price": false}
+"features_said": [], "judges_price": false, "says_cannot_see": false}
 using the listing_id numbers from FACTS. "listing_ids_mentioned" in the order the reply names
 them. Set "promises_agent_contact" true whenever the reply says our agent will contact them,
 call them, confirm or discuss something; "promises_media" true whenever it says photos or a
 video are coming; "says_no_photos" true whenever it says photos are not available;
 "photos_coming_said" = the number of photos the reply says are being sent now (null if none);
+"says_cannot_see" true whenever it says you cannot see, open or listen to something they sent;
 "judges_price" true whenever it accepts, refuses or judges their offer or says whether the price can
 change; "promises_visit" true whenever it says they can come to see it (on any day or time) or a visit is
 fixed or arranged; "features_said" = every amenity or feature the reply says a listing has (not its rooms, size, price
@@ -135,6 +136,8 @@ class ReplyDraft(BaseModel):
     photos_coming_said: int | None = Field(None, description="how many photos the reply says are being sent now")
     promises_visit: bool = Field(False, description="the reply says they can come to see it (any day or time), or "
                                                     "that a visit is fixed or arranged")
+    says_cannot_see: bool = Field(False, description="the reply says you cannot see, open or listen to something "
+                                                     "the buyer sent")
     judges_price: bool = Field(False, description="the reply accepts, refuses or judges the buyer's offer, or says "
                                                   "whether the price can or cannot change")
     features_said: list[str] = Field(default_factory=list,
