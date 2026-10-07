@@ -99,6 +99,19 @@ async def get_listing(conn: AsyncConnection, listing_id: int) -> dict | None:
     }
 
 
+async def summaries(conn: AsyncConnection, listing_ids: list[int]) -> list[dict]:
+    """Today's summary of these listings, in the order given (gone ones included, with
+    their availability, so nothing is called available that is not)."""
+    if not listing_ids:
+        return []
+    tree = await load_tree(conn)
+    now = datetime.now(timezone.utc)
+    cur = conn.cursor(row_factory=dict_row)
+    rows = {r["id"]: r for r in await (await cur.execute(
+        _SUMMARY_SQL + " WHERE l.id = ANY(%s)", (listing_ids,))).fetchall()}
+    return [_summary(rows[i], tree, now) for i in listing_ids if i in rows]
+
+
 # --------------------------------------------------------------------------
 # search_listings
 # --------------------------------------------------------------------------

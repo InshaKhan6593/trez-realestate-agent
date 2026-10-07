@@ -197,6 +197,8 @@ def build_prompt(plan: Plan, facts: Facts, burst: list[dict], recent: list[dict]
             },
             "place": facts.location,
             "stock_preview": facts.stock_preview,
+            # The listings our last reply named, as they are now (the buyer may be reacting to them).
+            "listings_in_our_last_reply": [_listing_fact(r) for r in facts.last_shown],
             "which_listing_do_they_mean": [
                 {"options": [_listing_fact(c) for c in u["candidates"]]} for u in facts.unresolved_refs],
         },

@@ -63,6 +63,13 @@ def options_for(role: str) -> dict:
     return out
 
 
+def readings() -> int:
+    """EXTRACTOR_READINGS: how many times each message is read, at once, and combined
+    (default 2). Replaying a live turn, one reading dropped most details 2 times in 10."""
+    load_dotenv()
+    return max(1, int(os.environ.get("EXTRACTOR_READINGS", "2") or 2))
+
+
 def model_for(role: str) -> str:
     load_dotenv()
     name = os.environ.get(f"{role.upper()}_MODEL", "").strip()

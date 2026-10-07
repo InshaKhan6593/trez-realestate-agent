@@ -540,3 +540,38 @@ def test_a_place_we_do_not_know_may_be_called_empty(lead):
                                          claims_no_listings=True)])
     _, turn_id = turn(lead, "Bahria Town mein house khareedna hai?", llm)
     assert q("SELECT validation->>'attempts' FROM turns WHERE id = %s", turn_id) == [("1",)]
+
+
+def test_a_second_reading_fills_what_the_first_dropped_but_adds_nothing_unsaid():
+    # Replaying a live turn: one reading dropped "plot" 2 times in 10.
+    from agent.graph import _combine
+    said = lambda slot, value, words: {"slot": slot, "value": value, "said": words,  # noqa: E731
+                                       "source": "stated", "confidence": 1.0}
+    text = "120 gaz ka plot chahiye installments pe"
+    first = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}], "signals": [],
+        "slot_updates": [said("size_min_sqyd", 120, "120 gaz"), said("payment_mode", "installments", "installments pe")]})
+    second = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}],
+        "signals": ["urgent"], "slot_updates": [said("property_types", ["plot"], "plot"),
+                                                said("budget_max", 10_000_000, "1 crore tak")]})
+    ext, kept, unsaid = _combine([first, second], [text])
+    assert {u.slot: u.value for u in kept} == {"size_min_sqyd": 120, "payment_mode": "installments",
+                                               "property_types": ["plot"]}
+    assert ext is first and ext.signals == []        # the base reading's signals, none added
+
+
+def test_a_reaction_to_our_last_list_is_answered_from_those_listings(lead):
+    # Live run: "bohat mehnge hain" named no listing; the reply repeated the prices from the
+    # chat, was rejected twice, and the template went out. Now those listings are read again.
+    rows = _three_available()
+    reaction = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "other"}]})
+    llm = ScriptedLLM([SEARCH, reaction], [
+        ReplyDraft(reply="Ye options hain.", listing_ids_mentioned=[r[0] for r in rows]),
+        ReplyDraft(reply=f"Ji, pehla {pkr(rows[0][2])} ka hai.", listing_ids_mentioned=[rows[0][0]]),
+    ])
+    turn(lead, "khareedna hai", llm)
+    reply, _ = turn(lead, "bohat mehnge hain", llm)
+    facts = json.loads(llm.prompts["responder"][1][1]["content"])["FACTS"]
+    assert [f["listing_id"] for f in facts["listings_in_our_last_reply"]] == [r[0] for r in rows]
+    assert reply.text == f"Ji, pehla {pkr(rows[0][2])} ka hai."              # passed the check
+    # Read again, not asked about: none is recorded as one they inquired about.
+    assert not q("SELECT 1 FROM lead_listings WHERE lead_id = %s AND relation = 'inquired'", lead)

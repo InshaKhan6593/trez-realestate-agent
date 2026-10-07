@@ -12,6 +12,8 @@ message and for an agent takeover right before anything goes out.
 
 from __future__ import annotations
 
+import asyncio
+
 from dataclasses import asdict, dataclass, field
 from typing import Any, TypedDict
 
@@ -24,7 +26,7 @@ from . import trace
 from .context import TurnContext, has_urdu_script, load_context, said_in, unheard
 from .extract import build_prompt as extract_prompt
 from .extract import extract
-from .llm import LLM, Usage
+from .llm import LLM, Usage, readings
 from .locations import load_tree, place_choices
 from .memory import remember
 from .money import CRORE, LAKH, amounts_in, bare_numbers, pkr
@@ -118,7 +120,7 @@ async def _our_last_list(conn: AsyncConnection, lead_id: int, turn_id: int) -> l
         return []
     found = {r["id"]: r for r in await (await conn.cursor(row_factory=dict_row).execute(
         "SELECT id, zameen_id, title, price_pkr FROM listings WHERE id = ANY(%s)", (ids,))).fetchall()}
-    return [{"n": n, "zameen_id": found[i]["zameen_id"], "title": found[i]["title"],
+    return [{"n": n, "listing_id": i, "zameen_id": found[i]["zameen_id"], "title": found[i]["title"],
              "price": pkr(found[i]["price_pkr"])}
             for n, i in enumerate((i for i in ids if i in found), start=1)]
 
@@ -146,8 +148,17 @@ def _filled(obj) -> dict:
 async def n_extract(state: TurnState, config) -> TurnState:
     _, llm = _deps(config)
     ctx = state["ctx"]
-    messages = extract_prompt(ctx, state["places"], state["discussed"], state.get("last_list"))
-    ext = await extract(llm, state["usage"], messages)
+    last_list = [{k: v for k, v in x.items() if k != "listing_id"} for x in state.get("last_list") or []]
+    messages = extract_prompt(ctx, state["places"], state["discussed"], last_list)
+    texts = [m["text"] for m in ctx.burst if m.get("text")]
+    # Several readings at once (no extra wait), combined: replaying one live turn, a single
+    # reading dropped "plot" (and most details) 2 times in 10.
+    got = await asyncio.gather(*[extract(llm, state["usage"], messages) for _ in range(readings())],
+                               return_exceptions=True)
+    ok = [g for g in got if not isinstance(g, BaseException)]
+    if not ok:
+        raise got[0]
+    ext, kept, unsaid = _combine(ok, texts)
     # Language, where code can tell: Urdu script is read from the letters; a
     # message with no words (voice note, location, image) keeps the language
     # the buyer has been writing in rather than a guess.
@@ -160,8 +171,6 @@ async def n_extract(state: TurnState, config) -> TurnState:
         ext.language = "roman_urdu"
     elif not words and ctx.language:
         ext.language = ctx.language
-    texts = [m["text"] for m in ctx.burst if m.get("text")]
-    kept, unsaid = _with_evidence(ext, texts)
     if not kept and "search" in {i.type for i in ext.intents} and texts:
         # It says they are searching but reports no detail at all (live run: a message with a
         # place, size, type and budget came back empty): one second look, then the same check.
@@ -174,6 +183,22 @@ async def n_extract(state: TurnState, config) -> TurnState:
         kept, unsaid = _with_evidence(ext, texts)
     ext.slot_updates = kept
     return {"ext": ext, "unsaid": unsaid}
+
+
+def _combine(readings: list[Extraction], texts: list[str]) -> tuple[Extraction, list, list[dict]]:
+    """Readings of the same messages, combined. The one with the most values backed by the
+    buyer's words is the base (its intents and signals are used as they are); a value another
+    reading found, also backed by their words, fills a field the base left empty. Nothing
+    unsaid can come in this way: every value still quotes the buyer."""
+    checked = sorted(((r, *_with_evidence(r, texts)) for r in readings), key=lambda x: -len(x[1]))
+    base, kept, unsaid = checked[0]
+    have = {u.slot for u in kept}
+    for _, more, _ in checked[1:]:
+        for u in more:
+            if u.slot not in have:
+                kept.append(u)
+                have.add(u.slot)
+    return base, kept, [x for x in unsaid if x["slot"] not in have]
 
 
 def _with_evidence(ext: Extraction, texts: list[str]) -> tuple[list, list[dict]]:
@@ -205,7 +230,8 @@ async def n_tools(state: TurnState, config) -> TurnState:
     conn, _ = _deps(config)
     p, ctx = state["plan"], state["ctx"]
     with trace.step("run-tools") as obs:
-        facts = await run_tools(conn, ctx.state, p, [m.get("text") or "" for m in ctx.burst])
+        facts = await run_tools(conn, ctx.state, p, [m.get("text") or "" for m in ctx.burst],
+                                [x["listing_id"] for x in state.get("last_list") or []])
         if facts.search is not None:
             apply_scores(p, ctx.state, state["ext"], facts.search["total"])
         after_tools(p, unclear_listing=bool(facts.unresolved_refs) and not facts.listings,

@@ -14,7 +14,7 @@ from datetime import datetime
 from psycopg import AsyncConnection
 
 from . import trace
-from .listings import Criteria, get_listing, resolve_listing, search_listings, zameen_ids_in
+from .listings import Criteria, get_listing, resolve_listing, search_listings, summaries, zameen_ids_in
 from .context import has_urdu_script
 from .locations import (RESEMBLES, decide, find_location, load_tree, place_choices, places_in_text,
                         places_named, resemblance)
@@ -33,6 +33,7 @@ class Facts:
     unresolved_refs: list[dict] = field(default_factory=list)     # "which one?" candidates
     media: dict | None = None           # {"listing_id", "photo_count", "video_urls"}
     stock_preview: dict | None = None   # {"for_sale": n, "for_rent": n, "asked_location": ...}
+    last_shown: list[dict] = field(default_factory=list)  # our last reply's listings, read again
     tool_calls: list[dict] = field(default_factory=list)
 
     @property
@@ -46,13 +47,13 @@ class Facts:
         for l in self.listings.values():
             prices.add(l["price_pkr"])
             prices.update(v for v in (l.get("payment_plan") or {}).values() if isinstance(v, int) and v > 999)
-        for r in [*(self.search or {}).get("results", []), *self.candidates]:
+        for r in [*(self.search or {}).get("results", []), *self.candidates, *self.last_shown]:
             prices.add(r["price_pkr"])
         return prices
 
     def availability(self) -> dict[int, str]:
         """listing_id -> availability, for every listing the responder was shown."""
-        out = {c["listing_id"]: c["availability"] for c in self.candidates}
+        out = {c["listing_id"]: c["availability"] for c in [*self.last_shown, *self.candidates]}
         out.update({r["listing_id"]: r["availability"] for r in (self.search or {}).get("results", [])})
         out.update({l["listing_id"]: l["availability"] for l in self.listings.values()})
         return out
@@ -69,9 +70,12 @@ def _tool(facts: Facts, name: str, args) -> Iterator[dict]:
     facts.tool_calls.append(call)
 
 
-async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: list[str] = ()) -> Facts:
+async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: list[str] = (),
+                    last_list_ids: list[int] = ()) -> Facts:
     """`texts`: the buyer's messages this turn. A link to one of our listings in
-    them is found here, in code: the model's reading of it is not relied on."""
+    them is found here, in code: the model's reading of it is not relied on.
+    `last_list_ids`: the listings our last reply named, read again when the turn
+    has no other listing to talk about."""
     facts = Facts()
 
     linked = await zameen_ids_in(conn, " ".join(t for t in texts if t))
@@ -242,6 +246,14 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
                     facts.search = {**searched[near[0]], "buyer_has_not_said_buy_or_rent": True}
             counts["listings_shown_for"] = show
             facts.stock_preview = call["result"] = counts
+
+    # A reaction to what we just showed ("bohat mehnge hain") names no listing: those
+    # listings, as they are now, so the reply can speak of them from data (live run: it
+    # repeated their prices from the chat, was rejected, and the template went out).
+    if last_list_ids and not (facts.listings or facts.search or facts.unresolved_refs or facts.stock_preview):
+        with _tool(facts, "read_last_shown", {"listing_ids": list(last_list_ids)}) as call:
+            facts.last_shown = await summaries(conn, list(last_list_ids))
+            call["result"] = [r["zameen_id"] for r in facts.last_shown]
 
     # Media for the one listing they asked about.
     if (plan.want_photos or plan.want_video) and len(facts.listings) >= 1:

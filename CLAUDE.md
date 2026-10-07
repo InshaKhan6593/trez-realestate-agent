@@ -15,7 +15,7 @@ and hands leads to the human agent with full context. Their inventory is measure
 - **LangGraph** turn: extractor (LLM) → planner (code) → tools → responder (LLM) → validator (code).
   Graph state lives for one turn; the buyer's memory is in Postgres, never a checkpointer.
 - LLMs via **OpenRouter** (OpenAI-compatible API), not a provider SDK. Models and options come from
-  `.env` (`EXTRACTOR_MODEL`, `RESPONDER_MODEL`, `*_REASONING`, `*_TEMPERATURE`); the user picks them.
+  `.env` (`EXTRACTOR_MODEL`, `RESPONDER_MODEL`, `*_REASONING`, `*_TEMPERATURE`, `EXTRACTOR_READINGS`); the user picks them.
   Currently `deepseek/deepseek-v4-flash-vision-exp` for both, reasoning off. Never hard-code a model.
 - Code decides tools, questions, scoring, staleness and handoff; the LLM only extracts and words the reply.
 - Listing facts come only from tools/DB, never from chat history. Stale (unverified) means unknown, not available.
@@ -71,7 +71,7 @@ and hands leads to the human agent with full context. Their inventory is measure
   test message to the live webhook, turn read back (dry run until the WhatsApp token is set).
 - `supabase/`: local stack config + migrations. Photos live in the private `listing-photos` bucket.
 - `observability/`: local Langfuse (Docker) for viewing traces; secrets in git-ignored `observability/.env`.
-- `tests/`: pytest (183). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
+- `tests/`: pytest (185). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
   tests need `data/`; they skip cleanly when absent. Model calls in tests are scripted.
 - `data/`: git-ignored. `raw/<run>/` immutable snapshots, `media-store/` photos, `archive/` old snapshots.
 
