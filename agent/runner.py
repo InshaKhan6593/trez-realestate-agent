@@ -240,10 +240,15 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
                 # Nothing that fits in the asked place either way. If only one way has anything
                 # near (a wider area, or the closest), show that, as a search would (live run:
                 # plots asked after Askari 6 got "agent will contact you" instead of Gadap's plots).
+                # Both ways have some: the nearest of each, labelled (live: "houses in DHA", where
+                # Trez has none, got "we have none" and a budget question, no listings).
                 near = [p for p, r in searched.items() if r["results"]]
-                if len(near) == 1:
+                if near:
                     show = near
-                    facts.search = {**searched[near[0]], "buyer_has_not_said_buy_or_rent": True}
+                    per = {"sale": 3, "rent": 3} if len(near) == 1 else {"sale": 2, "rent": 1}
+                    facts.search = {**searched[near[0]], "buyer_has_not_said_buy_or_rent": True,
+                                    "purposes_shown": near,
+                                    "results": [r for p in near for r in searched[p]["results"][:per[p]]]}
             counts["listings_shown_for"] = show
             facts.stock_preview = call["result"] = counts
 

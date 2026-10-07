@@ -183,3 +183,27 @@ def test_buy_or_rent_unsaid_and_nothing_in_the_place_shows_the_nearest_of_the_on
     assert facts.stock_preview["listings_shown_for"] == ["sale"]
     assert facts.search["buyer_has_not_said_buy_or_rent"] and facts.search["stage"] in ("nearby", "closest")
     assert facts.search["results"] and all(r["property_type"] == kind for r in facts.search["results"])
+
+
+def test_buy_or_rent_unsaid_and_nothing_in_the_place_shows_the_nearest_both_ways():
+    # Live: "show me some houses in DHA" (Trez has nothing there) got "we have none" and a
+    # budget question, though houses are for sale and for rent elsewhere.
+    from agent.planner import LeadState, Plan
+    from agent.runner import run_tools
+    with psycopg.connect(DB_URL) as conn:
+        found = conn.execute(
+            """SELECT k.property_type, p.id FROM locations p,
+                      (SELECT property_type FROM listings WHERE status = 'available' GROUP BY property_type
+                       HAVING count(DISTINCT purpose) = 2) k
+               WHERE p.depth >= 2 AND NOT EXISTS (SELECT 1 FROM listings x JOIN locations y ON y.id = x.location_id
+                     WHERE x.status = 'available' AND x.property_type = k.property_type AND p.id = ANY(y.path))
+               LIMIT 1""").fetchone()
+    if not found:
+        pytest.skip("no kind sold and rented with a place lacking it, in this snapshot")
+    kind, place = found
+    plan = Plan(preview={"property_types": [kind], "location_id": place, "exclude_listing_ids": []})
+    facts = run(run_tools, LeadState(1), plan)
+    assert facts.stock_preview["for_sale"] == facts.stock_preview["for_rent"] == 0
+    assert sorted(facts.stock_preview["listings_shown_for"]) == ["rent", "sale"]
+    assert {r["purpose"] for r in facts.search["results"]} == {"sale", "rent"}
+    assert facts.search["buyer_has_not_said_buy_or_rent"]
