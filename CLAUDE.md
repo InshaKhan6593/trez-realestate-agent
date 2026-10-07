@@ -82,15 +82,22 @@ uv run python -m app.serve                       # webhook on :8000 (selector lo
 uv run arq app.worker.WorkerSettings             # turn worker
 docker compose -f observability/docker-compose.yml up -d   # optional: local Langfuse on :3000
 ```
-Tracing: set `LANGFUSE_HOST`/`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` (Cloud or local). `scripts/chat.py`
-prints each turn's trace link. When adding a step or tool, give it a trace step with a stable verb-first name.
+Tracing: set `LANGFUSE_HOST`/`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` (Cloud or local). In use: Langfuse
+Cloud, **US** region (`https://us.cloud.langfuse.com`, project `trez-agent`; the EU host rejects these keys).
+`scripts/chat.py` prints each turn's trace link and tags its traces `local-chat`. When adding a step or tool,
+give it a trace step with a stable verb-first name. Reading traces by API on the Hobby plan: `/api/public/traces`
+allows 5 requests a minute; use `/api/public/v2/observations` (time window, `fields=core,basic,io`) for bulk.
 Windows: psycopg async cannot use the Proactor event loop; `app/__init__.py` and `app.serve` handle it.
 
-## Status (2026-10-06)
+## Status (2026-10-07)
 Built and tested: scraper (structured data only), data layer, WhatsApp plumbing, and Phase 1 of the agent:
 answers from data, qualifying (one question at a time, memory across turns), suggestions, location
 hierarchy, photos/video links, human handoff with full context (bot keeps serving until the agent takes
-over; agent-to-agent reassign). Tested live: 3-5 s and < $0.001 per reply.
+over; agent-to-agent reassign). Tested live: 3-7 s and < $0.0012 per reply.
+Langfuse tracing built. On 2026-10-07 ten kinds of buyer (link, "pehla wala", rent, unknown place,
+ambiguous place, legal, token offer, not interested, dealer, returning buyer) were run live repeatedly and
+their traces read back; the faults found are fixed (ARCHITECTURE.md §0), and the extractor was measured
+10/10 on the hard readings after a long chat.
 
 Phase 1 scope OUT for now: visit booking, compare listings, saved searches, FAQ (anything not in the
 data goes to the agent, never guessed). The location alias table is out of scope.

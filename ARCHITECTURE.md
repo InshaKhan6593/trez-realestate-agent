@@ -8,7 +8,7 @@
 > Examples below that use Lahore areas or marla are illustrative.
 >
 > Status: **scraper, data layer, WhatsApp plumbing and Phase 1 of the agent built and tested** (see §0) ·
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 ---
 
@@ -43,14 +43,16 @@ The sections after this one are the original design. This section says what is b
 build deliberately differs**, with the reason. When they disagree, this section and the code win; the
 migrations in `supabase/migrations/` are the source of truth for the schema.
 
-### Built and tested (2026-10-06)
+### Built and tested (2026-10-07)
 | Part | Where | Notes |
 |---|---|---|
 | Zameen scraper + validator | `scraper/` | Structured data only; complete-run proof; field-change warnings |
 | Data layer | `sync/`, migrations | Listings with Zameen's full object, coordinates, amenities, installment plans; `listing_events`; 2-miss rule; photos in Storage; stale-photo pruning |
 | WhatsApp plumbing | `app/` | Signed webhook, dedupe, debounce, per-lead lock, delivery statuses, dry-run sending |
 | Agent, Phase 1 | `agent/` | Extractor → planner → tools → responder → validator in LangGraph; memory in Postgres; handoff with full context |
-| Live testing tool | `scripts/chat.py` | Talk to the agent as a buyer with the real model |
+| Tracing | `agent/trace.py`, Langfuse Cloud (US) | One trace per turn, one session per buyer, every step and tool with input and output, masked phones, scores (§15) |
+| Live testing tool | `scripts/chat.py` | Talk to the agent as a buyer with the real model; prints each turn's trace link |
+| Live verification (2026-10-07) | `scripts/chat.py` + traces | Ten kinds of buyer run live repeatedly and their traces read back; every fault found is fixed (rows below) and covered by a test |
 
 **Phase 1 scope (agreed with the client side):** answer listing questions from data; qualify one question
 at a time with memory across turns; suggest listings; location hierarchy; photos and video links;
