@@ -31,7 +31,10 @@ transcription is built), what the agent already knew, what the extractor underst
 answer, tokens, cost), what the code decided, every tool with its arguments and result, each reply
 draft and why the validator passed or rejected it, and what was sent to the buyer and the agent.
 Scores (`reply-passed`, `used-template`, `handoff`, `fit`, `intent`, `outcome`) make problems filterable.
-Phone numbers are masked. Tracing is off when the Langfuse keys in `.env` are empty.
+Phone numbers are masked. Tracing is off when the Langfuse keys in `.env` are empty, and always off in tests.
+
+To read one conversation: open **Sessions** in Langfuse and pick the buyer (`lead-<id>`). In the Tracing
+table, filter *Is Root Observation = True* for one row per turn, and click a row for its step tree.
 
 ## Stack
 Python (FastAPI, arq, LangGraph, psycopg) · Supabase (Postgres, Storage) · Redis · models via
@@ -52,10 +55,11 @@ cd scraper && npm ci && node scrape-zameen.mjs --output-dir ../data/raw/$(date +
 uv run python -m sync.ingest data/raw/$(date +%Y-%m-%d)
 
 uv run python -m scripts.chat              # talk to the agent as a buyer (nothing is sent on WhatsApp)
-uv run pytest                              # 145 tests
+uv run pytest                              # 150 tests
 ```
 
-Traces: Langfuse Cloud (keys in `.env`) or locally with
+Traces: Langfuse Cloud (keys and host in `.env`; this project is in the **US** region,
+`https://us.cloud.langfuse.com`) or locally with
 `docker compose -f observability/docker-compose.yml up -d` (UI on http://localhost:3000).
 
 Serving WhatsApp: `uv run python -m app.serve` (webhook) and `uv run arq app.worker.WorkerSettings`

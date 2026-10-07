@@ -21,6 +21,10 @@ class Settings:
     whatsapp_access_token: str
     whatsapp_phone_number_id: str
     whatsapp_api_version: str
+    # Approved Meta template for agent alerts (body "{{1}}" gets the alert on one line).
+    # Empty = alerts go as plain text, delivered only inside the agent's 24-hour window.
+    whatsapp_alert_template: str
+    whatsapp_alert_template_language: str
     # How long to wait for more messages before answering a burst (§5: 6-8 s).
     debounce_seconds: float
     # Supabase Storage holds listing photos (private bucket, service key).
@@ -44,6 +48,8 @@ def get_settings() -> Settings:
         whatsapp_access_token=env("WHATSAPP_ACCESS_TOKEN", ""),
         whatsapp_phone_number_id=env("WHATSAPP_PHONE_NUMBER_ID", ""),
         whatsapp_api_version=env("WHATSAPP_API_VERSION", "v23.0"),
+        whatsapp_alert_template=env("WHATSAPP_ALERT_TEMPLATE", ""),
+        whatsapp_alert_template_language=env("WHATSAPP_ALERT_TEMPLATE_LANGUAGE", "en"),
         debounce_seconds=float(env("DEBOUNCE_SECONDS", "7")),
         supabase_url=env("SUPABASE_URL", "http://127.0.0.1:54321"),
         supabase_service_role_key=env("SUPABASE_SERVICE_ROLE_KEY", ""),

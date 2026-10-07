@@ -8,7 +8,7 @@
 > Examples below that use Lahore areas or marla are illustrative.
 >
 > Status: **scraper, data layer, WhatsApp plumbing and Phase 1 of the agent built and tested** (see §0) ·
-> Last updated: 2026-10-06
+> Last updated: 2026-10-07
 
 ---
 
@@ -43,14 +43,16 @@ The sections after this one are the original design. This section says what is b
 build deliberately differs**, with the reason. When they disagree, this section and the code win; the
 migrations in `supabase/migrations/` are the source of truth for the schema.
 
-### Built and tested (2026-10-06)
+### Built and tested (2026-10-07)
 | Part | Where | Notes |
 |---|---|---|
 | Zameen scraper + validator | `scraper/` | Structured data only; complete-run proof; field-change warnings |
 | Data layer | `sync/`, migrations | Listings with Zameen's full object, coordinates, amenities, installment plans; `listing_events`; 2-miss rule; photos in Storage; stale-photo pruning |
 | WhatsApp plumbing | `app/` | Signed webhook, dedupe, debounce, per-lead lock, delivery statuses, dry-run sending |
 | Agent, Phase 1 | `agent/` | Extractor → planner → tools → responder → validator in LangGraph; memory in Postgres; handoff with full context |
-| Live testing tool | `scripts/chat.py` | Talk to the agent as a buyer with the real model |
+| Tracing | `agent/trace.py`, Langfuse Cloud (US) | One trace per turn, one session per buyer, every step and tool with input and output, masked phones, scores (§15) |
+| Live testing tool | `scripts/chat.py` | Talk to the agent as a buyer with the real model; prints each turn's trace link |
+| Live verification (2026-10-07) | `scripts/chat.py` + traces | Ten kinds of buyer run live repeatedly and their traces read back; every fault found is fixed (rows below) and covered by a test |
 
 **Phase 1 scope (agreed with the client side):** answer listing questions from data; qualify one question
 at a time with memory across turns; suggest listings; location hierarchy; photos and video links;
@@ -69,7 +71,8 @@ human handoff with full context. **Out for now:** visit booking, comparing listi
 | Buy/rent from the extractor | **Purpose counts only when the buyer states it**; until then a stock preview (counts for sale and rent, no prices) | The model guessed "buy" from "flat chahiye" |
 | Memory then alert | **Memory is committed before the handoff alert is built** | Otherwise the alert missed the very listing being negotiated |
 | Rent is monthly | **Rent frequency as Zameen states it**, else unknown | Zameen leaves it empty; never assumed |
-| WhatsApp photos | **Converted to JPEG** when needed | Zameen serves WebP; WhatsApp images accept only JPEG/PNG |
+| WhatsApp photos | **Converted to JPEG** when needed, and **shrunk to WhatsApp's 5 MB** limit; 4 sent at a time, and the reply says that number (`photos_coming_said`, checked) | Zameen serves WebP; WhatsApp images accept only JPEG/PNG. Live: "Photos 11 hain, bhej raha hoon" while 4 went out |
+| Handoff alert on WhatsApp (§7) | Sent as an **approved Meta template** when `WHATSAPP_ALERT_TEMPLATE` is set (body `{{1}}` = the alert on one line), else as text | The alert is business-initiated: outside the agent's 24-hour window Meta delivers only templates, and a plain text fails later (error 131047), silently for the buyer |
 | "wo DHA wala" resolved from the buyer's history (§12 Case 2) | The extractor also gets **our last list, numbered in the order the reply named them** (`turns.plan.listings_mentioned`), so "pehla / doosra / sasta wala" maps to a listing. Still unclear → the one question is "which one?" with the candidates; nothing is answered about a guess | Live trace: "pehle wale" was unresolved (all three shown at the same instant), the correct answer was rejected and an empty message went out |
 | Link → ID (§12 Case 1) | **Found in code** in the buyer's text (numbers that are our Zameen ids, checked in the DB) | The model once returned no id for a message with a link |
 | Area relaxing (§12) | **Code checks the model's place against the buyer's own words** (every extracted value carries `said`, its evidence) and today's place list (`places_named`): words that fit **several places** ("Emaar" = Panorama / The Views, "Askari" = 2/4/5/6) are **asked**, never searched across the city; words naming exactly one place overrule a different pick; words naming none ("Askari V", "malir cantt") keep the model's reading. The answer fills `location_id` (stored as that open question) and shows what is there. No place name is written in code or prompts | Live: Askari 5 flats were shown for "Emaar"; "askari" was mapped to DHA Defence; with an Emaar example removed from the prompt the model guessed one tower 7 times in 8 |
@@ -80,7 +83,7 @@ human handoff with full context. **Out for now:** visit booking, comparing listi
 | Langfuse trace (§15) with ingest/stt/reentry spans | **Built** with steps `load-context`, `extract-request`, `plan-turn`, `run-tools` (each tool), `write-reply`, `check-reply` (guardrail), `use-template`, `send-reply`, `send-media`, `save-memory`, `open-handoff`, `alert-agent`; scores `reply-passed`, `used-template`, `handoff`, `fit`, `intent`, `priority`, `outcome`; `turns.langfuse_trace_id` links the record to its trace | Names are verb-first and stable (Langfuse best practice: filters and evaluators refer to them). Re-entry findings appear inside `plan-turn` (`must`); `stt` comes with voice notes. Phone numbers are masked before export. Local Langfuse runs in Docker (`observability/`) |
 
 ### Not built yet
-Real WhatsApp number (Meta token) · Trez's agents in `agents` (handoff alerts need them) · agent
+Real WhatsApp number (Meta token) · Trez's agents in `agents` (handoff alerts need them) · the approved alert template in Meta · agent
 commands (`#take`, `#release`, `#sold`) · episode summaries for returning buyers (change reports on
 return already work) · voice notes · follow-ups · Sheet sync · Sentry · dashboard · hosted deploy.
 

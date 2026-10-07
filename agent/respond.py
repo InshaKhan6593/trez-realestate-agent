@@ -68,7 +68,9 @@ Hard rules:
    "shown_from_wider_area" and give each one's area and distance (distance_km).
    Set "claims_no_listings" true whenever the reply says we have nothing (somewhere/of a kind).
 9. If HANDOFF is set, tell the buyer once that our agent will contact them shortly, and keep
-   helping with facts meanwhile. If MEDIA is set, say the photos/video are coming next.
+   helping with facts meanwhile. If MEDIA is set, say the photos/video are coming next; if you
+   say how many photos are coming, it is MEDIA.photos_sending (e.g. "4 photos bhej raha hoon,
+   listing mein total 11 hain").
 10. If asked whether you are a bot: you are Trez Enterprises' assistant; offer the agent.
 11. Never promise an action that is not in this prompt: photos/video only if MEDIA is set;
     "our agent will contact/confirm/discuss" only if HANDOFF is set, or for a question you put
@@ -83,11 +85,12 @@ Hard rules:
 
 Return JSON: {"reply": "...", "listing_ids_mentioned": [...], "says_available": [...],
 "unanswered": [...], "claims_no_listings": false, "promises_agent_contact": false,
-"promises_media": false, "says_no_photos": false}
+"promises_media": false, "says_no_photos": false, "photos_coming_said": null}
 using the listing_id numbers from FACTS. "listing_ids_mentioned" in the order the reply names
 them. Set "promises_agent_contact" true whenever the reply says our agent will contact them,
 call them, confirm or discuss something; "promises_media" true whenever it says photos or a
-video are coming; "says_no_photos" true whenever it says photos are not available."""
+video are coming; "says_no_photos" true whenever it says photos are not available;
+"photos_coming_said" = the number of photos the reply says are being sent now (null if none)."""
 
 
 class ReplyDraft(BaseModel):
@@ -101,6 +104,7 @@ class ReplyDraft(BaseModel):
     promises_agent_contact: bool = Field(False, description="the reply says our agent will contact/confirm")
     promises_media: bool = Field(False, description="the reply says photos/a video are coming")
     says_no_photos: bool = Field(False, description="the reply says photos are not available")
+    photos_coming_said: int | None = Field(None, description="how many photos the reply says are being sent now")
 
 
 def _listing_fact(l: dict) -> dict:

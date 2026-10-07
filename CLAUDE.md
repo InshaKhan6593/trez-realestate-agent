@@ -62,11 +62,11 @@ and hands leads to the human agent with full context. Their inventory is measure
   `trace` (Langfuse: stable step names, masking, scores; every step and tool shows its input and output).
 - `app/`: WhatsApp side. `webhook` (verify signature, store, queue, 200), `meta`, `store`, `inbox`
   (Redis debounce + per-lead lock), `turn` (one turn: run the agent, re-check, send, commit, alert),
-  `worker` (arq), `sender` (Meta send / dry run), `reply` (agent adapter), `serve` (Windows dev server).
+  `worker` (arq), `sender` (Meta send / dry run; agent alerts as an approved template when set), `reply` (agent adapter), `serve` (Windows dev server).
 - `scripts/chat.py`: talk to the agent locally as a buyer; shows what it understood, decided, checked, cost.
 - `supabase/`: local stack config + migrations. Photos live in the private `listing-photos` bucket.
 - `observability/`: local Langfuse (Docker) for viewing traces; secrets in git-ignored `observability/.env`.
-- `tests/`: pytest (145). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
+- `tests/`: pytest (150). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
   tests need `data/`; they skip cleanly when absent. Model calls in tests are scripted.
 - `data/`: git-ignored. `raw/<run>/` immutable snapshots, `media-store/` photos, `archive/` old snapshots.
 
@@ -82,19 +82,27 @@ uv run python -m app.serve                       # webhook on :8000 (selector lo
 uv run arq app.worker.WorkerSettings             # turn worker
 docker compose -f observability/docker-compose.yml up -d   # optional: local Langfuse on :3000
 ```
-Tracing: set `LANGFUSE_HOST`/`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` (Cloud or local). `scripts/chat.py`
-prints each turn's trace link. When adding a step or tool, give it a trace step with a stable verb-first name.
+Tracing: set `LANGFUSE_HOST`/`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` (Cloud or local). In use: Langfuse
+Cloud, **US** region (`https://us.cloud.langfuse.com`, project `trez-agent`; the EU host rejects these keys).
+`scripts/chat.py` prints each turn's trace link and tags its traces `local-chat`. When adding a step or tool,
+give it a trace step with a stable verb-first name. Reading traces by API on the Hobby plan: `/api/public/traces`
+allows 5 requests a minute; use `/api/public/v2/observations` (time window, `fields=core,basic,io`) for bulk.
 Windows: psycopg async cannot use the Proactor event loop; `app/__init__.py` and `app.serve` handle it.
 
-## Status (2026-10-06)
+## Status (2026-10-07)
 Built and tested: scraper (structured data only), data layer, WhatsApp plumbing, and Phase 1 of the agent:
 answers from data, qualifying (one question at a time, memory across turns), suggestions, location
 hierarchy, photos/video links, human handoff with full context (bot keeps serving until the agent takes
-over; agent-to-agent reassign). Tested live: 3-5 s and < $0.001 per reply.
+over; agent-to-agent reassign). Tested live: 3-7 s and < $0.0012 per reply.
+Langfuse tracing built. On 2026-10-07 ten kinds of buyer (link, "pehla wala", rent, unknown place,
+ambiguous place, legal, token offer, not interested, dealer, returning buyer) were run live repeatedly and
+their traces read back; the faults found are fixed (ARCHITECTURE.md §0), and the extractor was measured
+10/10 on the hard readings after a long chat.
 
 Phase 1 scope OUT for now: visit booking, compare listings, saved searches, FAQ (anything not in the
 data goes to the agent, never guessed). The location alias table is out of scope.
 
 Not done yet: real WhatsApp number (Meta token), Trez's agents in the `agents` table (handoff alerts need
-them), agent commands (`#take`, `#release`), returning-buyer episode summaries, voice notes, follow-ups,
+them), the approved alert template (`WHATSAPP_ALERT_TEMPLATE`; without it alerts reach an agent only
+inside their 24-hour window), agent commands (`#take`, `#release`), returning-buyer episode summaries, voice notes, follow-ups,
 Sheet sync, Sentry, dashboard, hosted deploy.
