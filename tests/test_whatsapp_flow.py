@@ -95,7 +95,7 @@ class _Reply:
     def __init__(self, text):
         self.text, self.media_listing_id, self.alert = text, None, None
 
-    async def commit(self, conn):
+    async def commit(self, conn, delivered=True):
         pass
 
 

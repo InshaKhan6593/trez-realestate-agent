@@ -298,3 +298,9 @@ def test_a_bare_value_from_the_model_does_not_break_the_reading():
     by_slot = {u.slot: u for u in ext.slot_updates}
     assert by_slot["property_types"].value == ["flat"]
     assert by_slot["location_id"].value == 6655 and not said_in(by_slot["location_id"].said, ["Askari 5 mein flat"])
+
+
+def test_after_two_tries_at_buy_or_rent_the_next_question_is_asked():
+    # Live: after two "buy or rent?" the bot said only "Hello!" and asked nothing.
+    p = plan(LeadState(1, asked={"purpose": 2}), ext("greeting"))
+    assert p.ask == "location_id"

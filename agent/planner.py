@@ -247,9 +247,11 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
     # --- the one question ---------------------------------------------------
     quiet = "not_interested" in types or p.handoff is not None or state.handoff_state != "none"
     if not quiet:
-        if not _known(slots, "purpose"):
-            p.ask = "purpose" if state.asked.get("purpose", 0) < MAX_ASKS else None
+        if not _known(slots, "purpose") and state.asked.get("purpose", 0) < MAX_ASKS:
+            p.ask = "purpose"
         else:
+            # Buy or rent known, or asked twice already: the next most useful thing to know
+            # (live: after two "buy or rent?" the bot asked nothing and said only "Hello!").
             for name in QUESTION_ORDER:
                 if name == "bedrooms_min" and set(_as_list((slots.get("property_types") or {}).get("value"))) & {"plot", "commercial"}:
                     continue

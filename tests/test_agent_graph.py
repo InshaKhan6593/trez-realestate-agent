@@ -587,3 +587,23 @@ def test_no_answer_from_the_model_still_gets_the_buyer_a_reply(lead):
     reply, _ = turn(lead, "khareedna hai", llm)
     assert reply.text and reply.audit["validation"]["used_template"]
     assert len(llm.prompts["responder"]) == 1                         # not asked again
+
+
+def test_a_question_in_a_reply_that_was_not_sent_is_not_counted(lead):
+    # Live: "buy or rent?" in a dry-run reply the buyer never saw used up one of its two tries.
+    greeting = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "greeting"}]})
+    llm = ScriptedLLM([greeting], [ReplyDraft(reply="Salam! Buy karna hai ya rent?")])
+
+    async def go():
+        async with await psycopg.AsyncConnection.connect(DB_URL, autocommit=True) as conn:
+            mid = (await (await conn.execute(
+                """INSERT INTO messages (lead_id, direction, wa_message_id, type, text, at)
+                   VALUES (%s, 'in', 'wamid.graph.' || gen_random_uuid(), 'text', 'salam', now())
+                   RETURNING id""", (lead,))).fetchone())[0]
+            turn_id = (await (await conn.execute(
+                "INSERT INTO turns (lead_id) VALUES (%s) RETURNING id", (lead,))).fetchone())[0]
+            await conn.execute("UPDATE messages SET turn_id = %s WHERE id = %s", (turn_id, mid))
+            reply = await agent_reply(conn, llm, lead, turn_id, [mid])
+            await reply.commit(conn, delivered=False)
+    asyncio.run(go(), loop_factory=asyncio.SelectorEventLoop)
+    assert q("SELECT slot FROM open_questions WHERE lead_id = %s", lead) == []

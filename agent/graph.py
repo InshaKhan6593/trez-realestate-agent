@@ -53,9 +53,11 @@ class AgentReply:
     audit: dict = field(default_factory=dict)
     _commit: Any = None
 
-    async def commit(self, conn: AsyncConnection) -> None:
+    async def commit(self, conn: AsyncConnection, delivered: bool = True) -> None:
+        """`delivered`: the buyer got the reply. A question in a reply that was not sent
+        (dry run, a failed send) is not counted as asked."""
         if self._commit:
-            self.alert = await self._commit(conn)
+            self.alert = await self._commit(conn, delivered)
 
 
 class TurnState(TypedDict, total=False):
@@ -352,12 +354,13 @@ async def agent_reply(conn: AsyncConnection, llm: LLM, lead_id: int, turn_id: in
     mentioned = s.get("template_listing_ids", []) if s.get("used_template") else (
         draft.listing_ids_mentioned if draft else [])
 
-    async def commit(c: AsyncConnection) -> dict | None:
+    async def commit(c: AsyncConnection, delivered: bool = True) -> dict | None:
+        counted = asked and delivered
         with trace.step("save-memory", input={
-                "wants": p.slot_updates, "forget": p.clear_slots, "asked": p.ask if asked else None,
+                "wants": p.slot_updates, "forget": p.clear_slots, "asked": p.ask if counted else None,
                 "listings_mentioned": mentioned, "scores": p.scores}):
             await remember(c, lead_id, turn_id, ext=ext, plan=p, facts=facts, mentioned=mentioned,
-                           asked=asked, validation=validation, usage=s["usage"].calls)
+                           asked=counted, validation=validation, usage=s["usage"].calls)
         if not p.handoff:
             return None
         with trace.step("open-handoff", input=p.handoff) as obs:

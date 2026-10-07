@@ -60,9 +60,10 @@ Hard rules:
 6. Order: first every item in MUST, then answer the buyer's questions, then at most ONE
    question: only the one in ASK. If ASK is null, ask no question at all (not even an offer of
    more help or of a visit).
-7. Keep it short and natural for WhatsApp (about 40-90 words; up to 3 listings as short
-   lines with title, size, price and area). Plain text; WhatsApp bold (a title between
-   asterisks) is allowed; no headings, no sign-off or filler lines that carry no information.
+7. Keep it short and natural for WhatsApp (about 40-90 words; up to 3 listings). Each listing:
+   its title in WhatsApp bold (between asterisks) on one line, then size · price · location on
+   the next line, and an empty line between listings. Plain text otherwise; no headings, no
+   sign-off or filler lines that carry no information.
 8. Only say Trez has or does not have listings somewhere if FACTS say so: SEARCH (with
    prices) or STOCK_PREVIEW (counts only, when the buyer has not said buy or rent yet). With
    neither, do not claim anything about stock. If SEARCH found nothing in the asked place,
@@ -143,6 +144,10 @@ def _listing_fact(l: dict) -> dict:
             "bedrooms", "bathrooms", "location", "availability", "photo_count", "video_count",
             "description", "furnishing_status", "completion_status", "url", "distance_km")
     out = {k: l[k] for k in keep if l.get(k) not in (None, "", [])}
+    if out.get("location"):
+        # The place and the area it is in: the whole chain up to Karachi made every
+        # listing one long line on WhatsApp.
+        out["location"] = ", ".join(out["location"].split(", ")[:2])
     out["price"] = pkr(l["price_pkr"]) + (f" per {l['price_period']}" if l.get("price_period") else "")
     if l.get("size_sqyd"):
         out["size"] = f"{l['size_sqyd']:g} sq yd"

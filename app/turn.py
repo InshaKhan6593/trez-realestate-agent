@@ -32,7 +32,7 @@ from .sender import SendResult, send_alert
 log = logging.getLogger(__name__)
 
 # (conn, lead_id, turn_id, claimed messages) -> an AgentReply-like object with
-# .text, .media_listing_id, .photos, .video, .alert and async .commit(conn)
+# .text, .media_listing_id, .photos, .video, .alert and async .commit(conn, delivered)
 ReplyFn = Callable[[AsyncConnection, int, int, list[dict]], Awaitable[object]]
 SendFn = Callable[..., Awaitable[SendResult]]
 
@@ -115,7 +115,7 @@ async def _answer(redis: Redis, conn: AsyncConnection, settings: Settings, lead_
             obs.update(output=media)
 
     # Memory first, so a handoff alert includes what this turn was about.
-    await reply.commit(conn)
+    await reply.commit(conn, delivered=result.status == "sent")
     alert = getattr(reply, "alert", None)
     if alert:
         how = (f"template {settings.whatsapp_alert_template}" if settings.whatsapp_alert_template
