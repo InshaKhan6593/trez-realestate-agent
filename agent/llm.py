@@ -11,6 +11,7 @@ unvalidated reaches the planner.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from dataclasses import dataclass, field
@@ -81,21 +82,28 @@ def model_for(role: str) -> str:
 class LLM:
     """Thin async client. One instance per worker; pass `usage` per turn."""
 
-    def __init__(self, api_key: str | None = None, timeout: float = 30.0):
+    def __init__(self, api_key: str | None = None, timeout: float | None = None):
         load_dotenv()
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         if not self.api_key:
             raise LLMError("OPENROUTER_API_KEY is not set in .env")
-        self.timeout = timeout
+        # LLM_TIMEOUT_SECONDS: the whole call, start to end. httpx's own timeout counts each
+        # read, so a provider that keeps the connection open while sending little never hit
+        # it (live: one call held a turn, and a database connection, for 300 s).
+        self.timeout = timeout or float(os.environ.get("LLM_TIMEOUT_SECONDS", "25") or 25)
 
     async def _chat(self, model: str, messages: list[dict], **extra) -> dict:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                OPENROUTER_URL,
-                headers={"Authorization": f"Bearer {self.api_key}",
-                         "X-Title": "Trez WhatsApp agent"},
-                json={"model": model, "messages": messages, "usage": {"include": True}, **extra},
-            )
+        try:
+            async with asyncio.timeout(self.timeout):
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(
+                        OPENROUTER_URL,
+                        headers={"Authorization": f"Bearer {self.api_key}",
+                                 "X-Title": "Trez WhatsApp agent"},
+                        json={"model": model, "messages": messages, "usage": {"include": True}, **extra},
+                    )
+        except (TimeoutError, httpx.TimeoutException) as err:
+            raise LLMError(f"{model} gave no answer within {self.timeout:g} s") from err
         if resp.status_code >= 400:
             raise LLMError(f"OpenRouter HTTP {resp.status_code}: {resp.text[:400]}")
         body = resp.json()

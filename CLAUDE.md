@@ -72,7 +72,7 @@ and hands leads to the human agent with full context. Their inventory is measure
   test message to the live webhook, turn read back (dry run until the WhatsApp token is set).
 - `supabase/`: local stack config + migrations. Photos live in the private `listing-photos` bucket.
 - `observability/`: local Langfuse (Docker) for viewing traces; secrets in git-ignored `observability/.env`.
-- `tests/`: pytest (186). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
+- `tests/`: pytest (188). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
   tests need `data/`; they skip cleanly when absent. Model calls in tests are scripted.
 - `data/`: git-ignored. `raw/<run>/` immutable snapshots, `media-store/` photos, `archive/` old snapshots.
 

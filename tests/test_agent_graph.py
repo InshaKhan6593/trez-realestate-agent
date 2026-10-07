@@ -47,6 +47,8 @@ class ScriptedLLM:
         self.prompts[role].append(messages)
         usage.calls.append({"role": role, "model": "scripted"})
         item = self.queue[role].pop(0)
+        if isinstance(item, Exception):
+            raise item
         return item if isinstance(item, schema) else schema.model_validate(item)
 
 
@@ -575,3 +577,13 @@ def test_a_reaction_to_our_last_list_is_answered_from_those_listings(lead):
     assert reply.text == f"Ji, pehla {pkr(rows[0][2])} ka hai."              # passed the check
     # Read again, not asked about: none is recorded as one they inquired about.
     assert not q("SELECT 1 FROM lead_listings WHERE lead_id = %s AND relation = 'inquired'", lead)
+
+
+def test_no_answer_from_the_model_still_gets_the_buyer_a_reply(lead):
+    # Live run: a model call hung for 300 s and the turn failed: the buyer got nothing.
+    from agent.llm import LLMError
+    rows = _three_available()
+    llm = ScriptedLLM([SEARCH], [LLMError("gave no answer within 25 s")])
+    reply, _ = turn(lead, "khareedna hai", llm)
+    assert reply.text and reply.audit["validation"]["used_template"]
+    assert len(llm.prompts["responder"]) == 1                         # not asked again

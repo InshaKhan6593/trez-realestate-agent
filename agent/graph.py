@@ -26,7 +26,7 @@ from . import trace
 from .context import TurnContext, has_urdu_script, load_context, said_in, unheard
 from .extract import build_prompt as extract_prompt
 from .extract import extract
-from .llm import LLM, Usage, readings
+from .llm import LLM, LLMError, Usage, readings
 from .locations import load_tree, place_choices
 from .memory import remember
 from .money import CRORE, LAKH, amounts_in, bare_numbers, pkr
@@ -251,8 +251,17 @@ async def n_respond(state: TurnState, config) -> TurnState:
         messages.append({"role": "user", "content":
                          "Your previous reply was rejected: " + "; ".join(state["problems"])
                          + ". Write it again, fixing exactly these problems."})
-    draft = await respond(llm, state["usage"], messages)
+    try:
+        draft = await respond(llm, state["usage"], messages)
+    except LLMError as err:
+        # No reply from the model (timeout, provider error): the template answers from facts,
+        # rather than the buyer getting nothing.
+        return {"draft": None, "attempts": MAX_ATTEMPTS, "problems": [f"no reply from the model: {err}"]}
     return {"draft": draft, "attempts": state.get("attempts", 0) + 1, "prompt_words": prompt_words(messages)}
+
+
+def route_after_respond(state: TurnState) -> str:
+    return "check" if state.get("draft") is not None else "template"
 
 
 async def n_check(state: TurnState, config) -> TurnState:
@@ -285,13 +294,13 @@ def route_after_check(state: TurnState) -> str:
 
 async def n_template(state: TurnState, config) -> TurnState:
     p, ctx = state["plan"], state["ctx"]
-    with trace.step("use-template", input={"rejected_twice": state["problems"]}) as obs:
+    with trace.step("use-template", input={"why": state["problems"]}) as obs:
         t = template(p, state["facts"], state["ext"].language)
         if t.needs_agent:
             # Nothing safe to say from facts: the agent answers the message itself.
             add_unanswered(p, ctx.state, [m["text"] for m in ctx.burst if m.get("text")] or ["(message)"])
         obs.update(output={"text": t.text, "listings": t.listing_ids, "handed_to_agent": t.needs_agent},
-                   level="WARNING", status_message="reply failed the check twice")
+                   level="WARNING", status_message="no usable reply from the model")
     return {"text": t.text, "used_template": True, "template_listing_ids": t.listing_ids}
 
 
@@ -314,7 +323,7 @@ def build_graph():
     g.add_edge("extract", "plan")
     g.add_edge("plan", "tools")
     g.add_edge("tools", "respond")
-    g.add_edge("respond", "check")
+    g.add_conditional_edges("respond", route_after_respond, {"check": "check", "template": "template"})
     g.add_conditional_edges("check", route_after_check,
                             {"finalize": "finalize", "respond": "respond", "template": "template"})
     g.add_edge("template", "finalize")

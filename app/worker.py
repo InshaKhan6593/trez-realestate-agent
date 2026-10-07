@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 from arq import Retry, func
@@ -45,8 +46,10 @@ async def startup(ctx: dict) -> None:
     for role in ("extractor", "responder"):
         model_for(role)
     ctx["reply_fn"] = make_reply_fn(LLM())
+    # One connection per turn running at once (a turn holds one throughout): with fewer,
+    # turns waited for a connection and failed (live: PoolTimeout with 10 jobs, 5 connections).
     ctx["db"] = AsyncConnectionPool(
-        settings.database_url, kwargs=DB_CONNECT, min_size=1, max_size=5, open=False
+        settings.database_url, kwargs=DB_CONNECT, min_size=1, max_size=MAX_TURNS, open=False
     )
     await ctx["db"].open()
 
@@ -56,8 +59,14 @@ async def shutdown(ctx: dict) -> None:
     trace.flush()        # send the last traces before the process exits
 
 
+# Turns answered at once. Each holds a database connection (transaction pooler: many clients
+# are fine) and waits on the model most of the time.
+MAX_TURNS = int(os.environ.get("WORKER_MAX_TURNS", "10") or 10)
+
+
 class WorkerSettings:
-    functions = [func(process_turn, max_tries=60)]   # ~1 min of lock retries
+    functions = [func(process_turn, max_tries=60, timeout=120)]   # ~1 min of lock retries
+    max_jobs = MAX_TURNS
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
