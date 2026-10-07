@@ -62,7 +62,7 @@ Rules:
     (for a place: just their name for it). We check places against these words.
     The same words can give several fields (a size and a property type, say): fill each one.
   * property_types: list from house, flat, plot, commercial, portion (a flat may be called an
-    apartment).
+    apartment). A home they ask for (a house, a bungalow, a villa) is a house: it names the kind.
   * bedrooms_min: the number of bedrooms (or rooms) they ask for.
   * budget_min/budget_max: whole PKR. 1 crore = 10,000,000; 1 lakh = 100,000; a bare number in
     a house-buying chat is crore (inferred).

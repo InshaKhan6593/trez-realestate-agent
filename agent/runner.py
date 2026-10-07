@@ -206,11 +206,12 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
     if plan.preview is not None:
         wanted = {k: v for k, v in plan.preview.items() if k != "show_both"}
         with _tool(facts, "stock_preview", wanted) as call:
-            found, asked = {}, None
+            found, searched, asked = {}, {}, None
             for purpose in ("sale", "rent"):
                 result = await search_listings(conn, Criteria(
                     purpose=purpose, **{k: v for k, v in wanted.items() if v not in (None, [])}))
                 asked = asked or result.get("asked_location")
+                searched[purpose] = result
                 found[purpose] = result if result["stage"] == "exact" and result["total"] else None
             counts = {"for_sale": found["sale"]["total"] if found["sale"] else 0,
                       "for_rent": found["rent"]["total"] if found["rent"] else 0,
@@ -231,6 +232,14 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
                                 "total": sum(found[p]["total"] for p in show), "purposes_shown": show,
                                 "buyer_has_not_said_buy_or_rent": True,
                                 "results": [r for p in show for r in found[p]["results"][:per[p]]]}
+            elif not any(found.values()):
+                # Nothing that fits in the asked place either way. If only one way has anything
+                # near (a wider area, or the closest), show that, as a search would (live run:
+                # plots asked after Askari 6 got "agent will contact you" instead of Gadap's plots).
+                near = [p for p, r in searched.items() if r["results"]]
+                if len(near) == 1:
+                    show = near
+                    facts.search = {**searched[near[0]], "buyer_has_not_said_buy_or_rent": True}
             counts["listings_shown_for"] = show
             facts.stock_preview = call["result"] = counts
 

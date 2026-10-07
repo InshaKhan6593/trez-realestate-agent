@@ -162,3 +162,24 @@ def test_stale_means_unverified_never_available():
     assert availability("available", now - timedelta(days=8), now) == "unverified"
     assert availability("needs_verification", now, now) == "unverified"
     assert availability("sold", now, now) == "sold"
+
+
+def test_buy_or_rent_unsaid_and_nothing_in_the_place_shows_the_nearest_of_the_one_way_that_has_any():
+    # Live run: plots asked after "Askari 6" (none there) got "our agent will contact you"
+    # instead of the plots one level up. A place with listings but none of a type sold elsewhere:
+    from agent.planner import LeadState, Plan
+    from agent.runner import run_tools
+    with psycopg.connect(DB_URL) as conn:
+        kind, place = conn.execute(
+            """SELECT k.property_type, l.location_id FROM listings l,
+                      (SELECT property_type FROM listings WHERE status = 'available' GROUP BY property_type
+                       HAVING bool_and(purpose = 'sale')) k
+               WHERE l.status = 'available' AND NOT EXISTS (SELECT 1 FROM listings x WHERE x.status = 'available'
+                     AND x.location_id = l.location_id AND x.property_type = k.property_type)
+               LIMIT 1""").fetchone()
+    plan = Plan(preview={"property_types": [kind], "location_id": place, "exclude_listing_ids": []})
+    facts = run(run_tools, LeadState(1), plan)
+    assert facts.stock_preview["for_sale"] == facts.stock_preview["for_rent"] == 0
+    assert facts.stock_preview["listings_shown_for"] == ["sale"]
+    assert facts.search["buyer_has_not_said_buy_or_rent"] and facts.search["stage"] in ("nearby", "closest")
+    assert facts.search["results"] and all(r["property_type"] == kind for r in facts.search["results"])
