@@ -55,14 +55,23 @@ Secrets never go in the repo (it is public): Railway variables, GitHub Actions s
 
 ## 3. Railway
 
-1. railway.com → New project → **Deploy from GitHub repo** → this repo. Region **Singapore**.
-2. That first service is the **webhook**. Settings:
-   - Config-as-code file: `/deploy/railway.webhook.json` (Dockerfile build, `/health` check)
-   - Networking → **Generate domain**. The webhook URL for Meta is `https://<domain>/webhook`.
-3. **+ New → Database → Redis** (same project).
-4. **+ New → GitHub repo** → the same repo again: the **worker**. Settings:
-   - Config-as-code file: `/deploy/railway.worker.json` (no domain needed)
-5. Variables. Easiest as project **Shared Variables**, used by both services:
+Done for Trez (2026-10-07): project **trez-agent**, everything in Singapore
+(`asia-southeast1-eqsg3a`); webhook at `https://webhook-production-20e7.up.railway.app`.
+Railway builds both app services from the root `Dockerfile`. Railway no longer accepts
+`railway.json` config files, so each service's settings live on the service itself:
+
+| Service | Start command | Other settings |
+|---|---|---|
+| **webhook** | `sh -c 'uvicorn app.webhook:app --host 0.0.0.0 --port ${PORT:-8000}'` | `PORT=8080`; healthcheck `/health` (60 s); restart on failure; public domain (port 8080) |
+| **worker** | `arq app.worker.WorkerSettings` | restart always; no domain |
+| **Redis** | Railway's Redis template (`redis:8.2`, volume `/data`) | private network only |
+
+To recreate it: New project → **+ New → Database → Redis**; two empty services `webhook` and
+`worker` (Settings → Source → this repo, branch `main`), each with the start command above and
+region Singapore; on the webhook, Networking → **Generate domain**.
+
+Variables are stored once as project **Shared Variables**; each app service holds references
+(`DATABASE_URL = ${{shared.DATABASE_URL}}`, ...) plus `REDIS_URL = ${{Redis.REDIS_URL}}`:
 
    | Variable | Value |
    |---|---|
@@ -70,14 +79,25 @@ Secrets never go in the repo (it is public): Railway variables, GitHub Actions s
    | `REDIS_URL` | `${{Redis.REDIS_URL}}` (Railway fills it in) |
    | `OPENROUTER_API_KEY`, `EXTRACTOR_MODEL`, `RESPONDER_MODEL`, `EXTRACTOR_REASONING`, `RESPONDER_REASONING` | as in your `.env` |
    | `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | as in `.env`; `LANGFUSE_TRACING_ENVIRONMENT=production` |
-   | `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | from Meta (step 4); a long random verify token you choose |
+   | `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | random for now (lets `scripts/smoke.py` sign test messages); the app secret is replaced by Meta's in step 4 |
    | `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | **leave empty until Meta is ready**: empty = dry run, nothing is sent |
    | `WHATSAPP_ALERT_TEMPLATE` | name of the approved alert template (see `.env.example`) |
    | `SENTRY_DSN` | optional, from sentry.io (free); errors are reported with phone numbers masked |
    | `DEBOUNCE_SECONDS` | `7` |
 
-6. Deploys happen on every push to `main`. Check: `https://<domain>/health` → `{"ok": true}`;
-   the worker's logs show `Starting worker for 1 functions: process_turn`.
+Deploys happen on every push to `main`. Check: `https://<domain>/health` → `{"ok": true}`; the
+worker's logs show `Starting worker for 1 functions: process_turn`. (Railway labels these lines
+"error" only because Python logs to stderr.)
+
+End-to-end check without WhatsApp: a signed, Meta-shaped message to the live webhook, then the
+turn read back from the database (dry run: recorded as `not_sent`; the trace is in Langfuse,
+environment `production`):
+```bash
+SMOKE_APP_SECRET=<WHATSAPP_APP_SECRET> SMOKE_DATABASE_URL=<DATABASE_URL> \
+  uv run python -m scripts.smoke https://<domain> "Askari 6 mein ghar khareedna hai, 9 crore tak"
+```
+Measured 2026-10-07: 5-7 s inside the bot (almost all model time; each database step ~0.05 s),
+plus the 7 s wait for more messages.
 
 ## 4. WhatsApp (when Trez's number is ready)
 

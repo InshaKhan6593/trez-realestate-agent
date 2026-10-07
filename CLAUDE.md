@@ -67,7 +67,8 @@ and hands leads to the human agent with full context. Their inventory is measure
   (Redis debounce + per-lead lock), `turn` (one turn: run the agent, re-check, send, commit, alert),
   `worker` (arq), `errors` (Sentry, phones masked), `sender` (Meta send / dry run; agent alerts as an approved template when set), `reply` (agent adapter), `serve` (Windows dev server).
 - `scripts/chat.py`: talk to the agent locally as a buyer; shows what it understood, decided, checked, cost.
-- `Dockerfile`, `deploy/railway.*.json`, `.github/workflows/sync-listings.yml`: production (DEPLOY.md).
+- `Dockerfile`, `.github/workflows/sync-listings.yml`: production (DEPLOY.md). `scripts/smoke.py`: signed
+  test message to the live webhook, turn read back (dry run until the WhatsApp token is set).
 - `supabase/`: local stack config + migrations. Photos live in the private `listing-photos` bucket.
 - `observability/`: local Langfuse (Docker) for viewing traces; secrets in git-ignored `observability/.env`.
 - `tests/`: pytest (152). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
@@ -109,4 +110,9 @@ data goes to the agent, never guessed). The location alias table is out of scope
 Not done yet: real WhatsApp number (Meta token), Trez's agents in the `agents` table (handoff alerts need
 them), the approved alert template (`WHATSAPP_ALERT_TEMPLATE`; without it alerts reach an agent only
 inside their 24-hour window), agent commands (`#take`, `#release`), returning-buyer episode summaries, voice notes, follow-ups,
-Sheet sync, dashboard. Deploy is prepared (DEPLOY.md) but not done: needs the Supabase and Railway accounts.
+Sheet sync, dashboard.
+
+Deployed 2026-10-07 (DEPLOY.md), in **dry run** until Trez's WhatsApp token is set: Railway project
+`trez-agent` (webhook `https://webhook-production-20e7.up.railway.app`, worker, Redis; Singapore),
+Supabase project `trez-agent` (ref `gkznjnxawwhqiumfhliy`, Singapore, 77 listings / 731 photos),
+nightly GitHub Actions sync on. Verified end to end with `scripts/smoke.py`: 5-7 s per turn in the bot.

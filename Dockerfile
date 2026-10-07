@@ -1,6 +1,6 @@
-# The bot backend: one image, two Railway services (see DEPLOY.md).
-#   webhook: uvicorn app.webhook:app      (deploy/railway.webhook.json)
-#   worker:  arq app.worker.WorkerSettings (deploy/railway.worker.json)
+# The bot backend: one image, two Railway services (start commands set on each service, DEPLOY.md).
+#   webhook: uvicorn app.webhook:app
+#   worker:  arq app.worker.WorkerSettings
 # The scraper (Node) is not in here: it runs on GitHub Actions.
 FROM python:3.13-slim
 
