@@ -247,12 +247,15 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
             counts["listings_shown_for"] = show
             facts.stock_preview = call["result"] = counts
 
-    # A reaction to what we just showed ("bohat mehnge hain") names no listing: those
+    # A reaction to what we just showed ("bohat mehnge hain") may name no listing: those
     # listings, as they are now, so the reply can speak of them from data (live run: it
     # repeated their prices from the chat, was rejected, and the template went out).
-    if last_list_ids and not (facts.listings or facts.search or facts.unresolved_refs or facts.stock_preview):
-        with _tool(facts, "read_last_shown", {"listing_ids": list(last_list_ids)}) as call:
-            facts.last_shown = await summaries(conn, list(last_list_ids))
+    # Also when they asked about one of them: a comparison ("pehle aur doosre mein farq?")
+    # was given only one, and the other's price was rejected.
+    others = [i for i in last_list_ids if i not in facts.listings]
+    if others and not (facts.search or facts.unresolved_refs or facts.stock_preview):
+        with _tool(facts, "read_last_shown", {"listing_ids": others}) as call:
+            facts.last_shown = await summaries(conn, others)
             call["result"] = [r["zameen_id"] for r in facts.last_shown]
 
     # Media for the one listing they asked about.

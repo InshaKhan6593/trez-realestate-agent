@@ -272,3 +272,11 @@ def test_the_alert_says_what_the_buyer_wants_in_words():
     # Something we have no wording for still shows, readably, instead of vanishing.
     assert want_text("parking_needed", "yes", tree) == "parking needed: yes"
     assert want_text("timeline", "someday", tree) == "timeline: someday"
+
+
+def test_only_the_agent_decides_on_an_offer():
+    # Live run: "doosra wala 8.5 pe de do to aaj bayana de deta hoon" -> "wo 8.5 crore pe nahi de sakte".
+    refused = ReplyDraft(reply="Is price pe nahi de sakte.", judges_price=True)
+    assert check(refused, Plan(), Facts(), set()) == [
+        "the reply accepts, refuses or judges their offer, or says whether the price can change; "
+        "only our agent decides that: give the listed price and say the agent will discuss it"]

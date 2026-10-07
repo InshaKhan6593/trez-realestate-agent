@@ -77,6 +77,10 @@ def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int],
     # Visits are arranged by the agent only (live run: "Aap kal dekhne aa sakte hain").
     if draft.promises_visit:
         problems.append("the reply arranges or confirms a visit; only our agent arranges visits, say they will")
+    # Only the agent decides on price (live run: "wo 8.5 crore pe nahi de sakte" to a token offer).
+    if draft.judges_price:
+        problems.append("the reply accepts, refuses or judges their offer, or says whether the price can change; "
+                        "only our agent decides that: give the listed price and say the agent will discuss it")
     # A MUST item tells the model to state these (e.g. the old and the new price).
     must_prices = {m[k] for m in plan.must for k in ("was", "now") if isinstance(m.get(k), int)}
     allowed = facts.allowed_prices | buyer_amounts | must_prices
