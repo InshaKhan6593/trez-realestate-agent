@@ -27,6 +27,35 @@ class TurnContext:
     recent: list[dict] = field(default_factory=list)   # earlier messages, oldest first
 
 
+# What we can take in from each kind of WhatsApp message. Voice notes are not
+# transcribed yet; images are not looked at: the models must know that, not guess.
+_CAN_READ = {"text": True, "interactive": True, "button": True, "location": True,
+             "audio": False, "image": False, "video": False, "document": False, "sticker": False}
+
+
+def for_model(message: dict):
+    """A buyer message as the models see it: plain text for text, otherwise its
+    kind, any words it carried (caption, place name), and whether we can see or
+    hear its content."""
+    kind, text = message.get("type"), message.get("text")
+    if kind == "text":
+        return text or ""
+    return {"kind": "voice_note" if kind == "audio" else kind, "words": text,
+            "we_can_see_or_hear_its_content": _CAN_READ.get(kind, False)}
+
+
+def unheard(burst: list[dict]) -> list[str]:
+    """Kinds of message in this burst whose content we could not take in and a
+    person should look at (a sticker carries no question)."""
+    return [m["type"] for m in burst if m.get("type") not in ("sticker", "reaction")
+            and not _CAN_READ.get(m.get("type"), False)]
+
+
+def has_urdu_script(texts: list[str]) -> bool:
+    """Written in the Urdu (Arabic) alphabet: a property of the letters, not of words."""
+    return any("؀" <= ch <= "ۿ" or "ݐ" <= ch <= "ݿ" for t in texts for ch in (t or ""))
+
+
 async def load_context(conn: AsyncConnection, lead_id: int, burst_ids: list[int]) -> TurnContext:
     cur = conn.cursor(row_factory=dict_row)
     now = datetime.now(timezone.utc)

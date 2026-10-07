@@ -15,8 +15,11 @@ from psycopg import AsyncConnection
 
 from . import trace
 from .listings import Criteria, get_listing, resolve_listing, search_listings, zameen_ids_in
-from .locations import decide, find_location, load_tree, place_choices, places_named
+from .context import has_urdu_script
+from .locations import (RESEMBLES, decide, find_location, load_tree, place_choices, places_in_text,
+                        places_named, resemblance)
 from .media import media_for_listing
+from .money import pkr
 from .planner import LeadState, Plan
 
 MAX_DETAILED = 3
@@ -78,6 +81,21 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
         plan.listing_refs = [*({"zameen_id": z} for z in linked if z not in named),
                              *(r for r in plan.listing_refs if "zameen_id" in r)]
 
+    # A search where the model recorded no place, but the buyer wrote the full
+    # name of one of today's places (live run: "Askari 6 villa rate?" searched
+    # their earlier area in half the runs): use the place they named.
+    if (plan.search is not None or plan.preview is not None) and "location_id" not in plan.slot_updates \
+            and not plan.location_text:
+        tree, offered = await load_tree(conn), {c["id"] for c in await place_choices(conn)}
+        named = places_in_text(tree, " ".join(t for t in texts if t), offered)
+        if len(named) == 1:
+            with _tool(facts, "place_in_message", {"text": " ".join(t for t in texts if t)}) as call:
+                call["result"] = {"place": tree.places[named[0]].name, "place_id": named[0]}
+            plan.slot_updates["location_id"] = {"value": named[0], "source": "stated", "confidence": 1.0}
+            for target in (plan.search, plan.preview):
+                if target is not None:
+                    target["location_id"] = named[0]
+
     # Place the model picked by id, checked against the buyer's own words and
     # today's places: words that fit several ("Emaar" = two towers) are asked
     # about; words that name one place outright overrule a different pick;
@@ -89,7 +107,16 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
             named = places_named(tree, plan.place_words, offered)
             inside = len(named) == 1 and chosen in tree.places and named[0] in tree.places[chosen].path
             verdict = ("ask" if len(named) > 1 else "keep" if not named or inside else "use_named")
-            call["result"] = {"places_named": [tree.places[i].name for i in named], "verdict": verdict}
+            likeness = None
+            if verdict == "keep" and not named and chosen in tree.places and not has_urdu_script([plan.place_words]):
+                # Words that name none of our places: the model's reading is kept only if
+                # its place resembles them (a short form, a typo, a numeral). A different
+                # place it knows to be nearby is a guess (live run: "Clifton" -> Zamzama).
+                likeness = await resemblance(conn, plan.place_words, tree.places[chosen].name)
+                if likeness < RESEMBLES:
+                    verdict = "not_our_place"
+            call["result"] = {"places_named": [tree.places[i].name for i in named], "verdict": verdict,
+                              **({"resemblance": round(likeness, 2)} if likeness is not None else {})}
         if verdict == "ask":
             facts.location = {"status": "ask", "text": plan.place_words, "options": _options(tree, named)}
             del plan.slot_updates["location_id"]
@@ -99,6 +126,15 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
             for target in (plan.search, plan.preview):
                 if target is not None:
                     target["location_id"] = named[0]
+        elif verdict == "not_our_place":
+            # Treated like a place we do not have: looked up, said honestly, nearest shown.
+            said = plan.slot_updates.pop("location_id")
+            plan.slot_updates["location_text"] = {**said, "value": plan.place_words}
+            plan.location_text = plan.place_words
+            plan.clear_slots = [*plan.clear_slots, "location_id"]
+            for target in (plan.search, plan.preview):
+                if target is not None:
+                    target["location_id"] = None
 
     # Place: a name the extractor could not map to an id.
     if plan.location_text:
@@ -160,19 +196,37 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
         with _tool(facts, "search_listings", plan.search) as call:
             criteria = Criteria(**{k: v for k, v in plan.search.items() if v not in (None, [])})
             facts.search = await search_listings(conn, criteria)
-            call["result"] = {k: facts.search.get(k) for k in
-                              ("stage", "total", "widened_to", "levels_up", "asked_location") if k in facts.search}
-            call["result"]["results"] = [r["zameen_id"] for r in facts.search["results"]]
+            if plan.more_options:
+                # Said, so "nothing more here" is not read as "nothing here".
+                facts.search["already_shown_left_out"] = len(plan.search["exclude_listing_ids"])
+            call["result"] = _search_brief(facts.search)
 
-    # Buy or rent not said yet: how much stock is there each way.
+    # Buy or rent not said yet: what matches everything they DID say, each way.
     if plan.preview is not None:
-        with _tool(facts, "stock_preview", plan.preview) as call:
-            counts = {}
+        wanted = {k: v for k, v in plan.preview.items() if k != "show_both"}
+        with _tool(facts, "stock_preview", wanted) as call:
+            found = {}
             for purpose in ("sale", "rent"):
-                criteria = Criteria(purpose=purpose, **{k: v for k, v in plan.preview.items() if v not in (None, [])})
-                result = await search_listings(conn, criteria)
-                counts[f"for_{purpose}"] = result["total"] if result["stage"] == "exact" else 0
-                counts["asked_location"] = result.get("asked_location")
+                result = await search_listings(conn, Criteria(
+                    purpose=purpose, **{k: v for k, v in wanted.items() if v not in (None, [])}))
+                found[purpose] = result if result["stage"] == "exact" and result["total"] else None
+            counts = {"for_sale": found["sale"]["total"] if found["sale"] else 0,
+                      "for_rent": found["rent"]["total"] if found["rent"] else 0,
+                      "asked_location": next((r["asked_location"] for r in found.values() if r), None),
+                      # What these counts match, so a count is never read as more or less than it is.
+                      "counted": _counted(wanted)}
+            # Listings, not just counts: when only one way has any (nothing to
+            # choose), or both ways, labelled, once they have asked again to see.
+            show = [p for p, r in found.items() if r]
+            if len(show) == 2 and not plan.preview.get("show_both"):
+                show = []
+            if show:
+                per = {"sale": 3, "rent": 3} if len(show) == 1 else {"sale": 2, "rent": 1}
+                facts.search = {"stage": "exact", "asked_location": counts["asked_location"],
+                                "total": sum(found[p]["total"] for p in show), "purposes_shown": show,
+                                "buyer_has_not_said_buy_or_rent": True,
+                                "results": [r for p in show for r in found[p]["results"][:per[p]]]}
+            counts["listings_shown_for"] = show
             facts.stock_preview = call["result"] = counts
 
     # Media for the one listing they asked about.
@@ -181,6 +235,27 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
         with _tool(facts, "media_for_listing", {"listing_id": target}) as call:
             facts.media = call["result"] = await media_for_listing(conn, target)
     return facts
+
+
+def _search_brief(search: dict) -> dict:
+    out = {k: search.get(k) for k in ("stage", "total", "widened_to", "levels_up", "asked_location",
+                                      "already_shown_left_out") if k in search}
+    out["results"] = [r["zameen_id"] for r in search["results"]]
+    return out
+
+
+def _counted(criteria: dict) -> dict:
+    """The buyer's criteria a count was made with, readable (place: see asked_location)."""
+    out = {}
+    if criteria.get("property_types"):
+        out["property_types"] = criteria["property_types"]
+    for k in ("budget_min", "budget_max"):
+        if criteria.get(k):
+            out[k] = pkr(criteria[k])
+    for k in ("size_min_sqyd", "size_max_sqyd", "bedrooms_min"):
+        if criteria.get(k):
+            out[k] = criteria[k]
+    return out or {"anything": "no type, size or budget given"}
 
 
 def _options(tree, place_ids: list[int]) -> list[dict]:

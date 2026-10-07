@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 IntentType = Literal[
     "greeting",            # salam, hi
@@ -59,27 +59,70 @@ class Intent(BaseModel):
 
 
 class SlotUpdate(BaseModel):
-    # `said` is required for the model (the schema lists it), optional in code.
-    model_config = ConfigDict(json_schema_extra=lambda s: s.setdefault("required", []).append("said"))
-
+    """One thing the buyer wants (the form the code works with)."""
     slot: Slot
     value: str | int | float | list[str] | None
-    said: str | None = Field(None, description="Their own words this value comes from, copied exactly "
-                                               "('askari 5', 'emaar', '4 cr tak')")
+    said: str | None = Field(None, description="Their own words this value comes from, copied exactly")
     source: Literal["stated", "inferred"] = Field(description="stated: they said it; inferred: implied")
     confidence: float = Field(ge=0, le=1)
+
+
+class Said(BaseModel):
+    """A value the buyer gave, with the words it came from."""
+    value: str | int | float | list[str]
+    said: str = Field(description="Their own words this value comes from, copied exactly")
+    source: Literal["stated", "inferred"] = Field(description="stated: they said it; inferred: implied")
+    confidence: float = Field(ge=0, le=1)
+
+
+def _all_required(schema: dict) -> None:
+    schema["required"] = list(schema["properties"])
+
+
+class Wants(BaseModel):
+    """What the buyer wants to buy or rent, from THESE messages. One field per kind of detail,
+    each null unless these messages say it: answering every field, rather than listing what
+    comes to mind, is what keeps a second detail in one sentence from being dropped (measured:
+    "3 rooms + house" kept both 20/20 this way, 3/12 as a free list)."""
+    model_config = ConfigDict(json_schema_extra=_all_required)
+
+    purpose: Said | None = None
+    property_types: Said | None = None
+    location_id: Said | None = None
+    location_text: Said | None = None
+    budget_min: Said | None = None
+    budget_max: Said | None = None
+    size_min_sqyd: Said | None = None
+    size_max_sqyd: Said | None = None
+    bedrooms_min: Said | None = None
+    timeline: Said | None = None
+    payment_mode: Said | None = None
+    decision_maker: Said | None = None
+    use: Said | None = None
+    name: Said | None = None
 
 
 class Extraction(BaseModel):
     # Signals come before intents, and are required, so the model decides them first:
     # written last, they were dropped (a token offer was caught 1 time in 10 after a long chat).
-    model_config = ConfigDict(json_schema_extra=lambda s: s.setdefault("required", []).append("signals"))
+    model_config = ConfigDict(json_schema_extra=lambda s: (
+        s.setdefault("required", []).extend(["signals", "wants"]),
+        s["properties"].pop("slot_updates", None)))
 
     language: Literal["roman_urdu", "urdu", "english", "mixed"]
     signals: list[Literal["visit_request", "token_or_bayana", "cash_ready", "urgent",
                           "dealer", "frustrated", "repeat_question"]] = Field(
         default_factory=list, description="Buying signals in THESE messages; [] if none")
     intents: list[Intent]
-    slot_updates: list[SlotUpdate] = Field(default_factory=list)
+    wants: Wants = Field(default_factory=Wants)
     rejected: list[ListingRef] = Field(default_factory=list, description="Listings they said no to")
     rejected_reason: str | None = None
+    # The code's form of `wants` (not shown to the model). Filled from `wants`; tests may pass it directly.
+    slot_updates: list[SlotUpdate] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _wants_as_slot_updates(self) -> "Extraction":
+        if not self.slot_updates:
+            self.slot_updates = [SlotUpdate(slot=name, **said.model_dump())
+                                 for name, said in self.wants if said is not None]
+        return self

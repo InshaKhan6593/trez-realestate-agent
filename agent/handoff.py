@@ -22,6 +22,7 @@ from psycopg.types.json import Jsonb
 
 from .listings import availability
 from .locations import load_tree
+from .planner import _handoff_rank
 
 RECENT_MESSAGES = 10
 
@@ -82,7 +83,7 @@ def _pkr(n: int | None) -> str:
 
 
 # What the buyer wants, as the agent would say it. Order = how an agent reads a lead.
-_WANT_ORDER = ["ready_to_pay", "purpose", "property_types", "location_id", "location_text", "budget_min",
+_WANT_ORDER = ["ready_to_pay", "wants_visit", "purpose", "property_types", "location_id", "location_text", "budget_min",
                "budget_max", "size_min_sqyd", "size_max_sqyd", "bedrooms_min", "timeline", "payment_mode",
                "use", "decision_maker"]
 _WORDS = {
@@ -108,6 +109,8 @@ def want_text(slot: str, value, tree) -> str:
         return _WORDS[slot].get(str(value), f"{slot.replace('_', ' ')}: {value}")
     if slot == "ready_to_pay":
         return "ready to pay a token"
+    if slot == "wants_visit":
+        return "wants to visit"
     if slot == "property_types":
         return "/".join(value) if isinstance(value, list) else str(value)
     if slot == "location_id":
@@ -183,14 +186,17 @@ async def request_handoff(conn: AsyncConnection, lead_id: int, reason: str,
         ctx = await build_context(conn, lead_id)
         agent = await _pick_agent(cur, lead_id)
         existing = await (await cur.execute(
-            """SELECT id, open_items FROM handoffs
+            """SELECT id, open_items, reason FROM handoffs
                WHERE lead_id = %s AND released_at IS NULL ORDER BY requested_at DESC LIMIT 1""",
             (lead_id,))).fetchone()
         if existing:
             items = list(dict.fromkeys([*existing["open_items"], *open_items]))
+            # The record keeps the strongest reason so far (a visit request outranks
+            # "not in data"), the same one the agent's alert leads with.
+            reason = min(reason, existing["reason"], key=_handoff_rank)
             alert = format_alert(ctx, reason, items, also)
-            await cur.execute("UPDATE handoffs SET open_items = %s, summary = %s WHERE id = %s",
-                              (Jsonb(items), alert, existing["id"]))
+            await cur.execute("UPDATE handoffs SET open_items = %s, summary = %s, reason = %s WHERE id = %s",
+                              (Jsonb(items), alert, reason, existing["id"]))
             return HandoffRequest(existing["id"], agent, alert, new=False)
         alert = format_alert(ctx, reason, open_items, also)
         handoff_id = (await (await cur.execute(

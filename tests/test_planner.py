@@ -191,6 +191,29 @@ def test_an_unclear_listing_makes_the_question_which_one():
     assert p.ask == "which_listing"
 
 
+def test_values_are_stored_in_the_type_the_code_uses():
+    # The model sometimes sends numbers as text ("3"): comparing a listing's bedrooms with "3" breaks the search.
+    e = ext("search", slots=[("bedrooms_min", "3", "stated", 1.0), ("budget_max", "60,000,000", "stated", 1.0),
+                             ("property_types", "flat", "stated", 1.0), ("size_min_sqyd", "ya", "stated", 1.0)])
+    p = plan(LeadState(1), e)
+    assert p.slot_updates["bedrooms_min"]["value"] == 3 and p.slot_updates["budget_max"]["value"] == 60_000_000
+    assert p.slot_updates["property_types"]["value"] == ["flat"]
+    assert "size_min_sqyd" not in p.slot_updates
+    assert {"slot": "size_min_sqyd", "value": "ya", "why": "not a usable value"} in p.ignored_slots
+
+
+def test_the_model_answers_one_field_per_detail_and_the_code_gets_them_all():
+    # Live run: "teen kamron wala ghar" as a free list kept "3 rooms" and dropped "ghar" 9 times in 12.
+    e = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}], "wants": {
+        "bedrooms_min": {"value": "3", "said": "teen kamron", "source": "stated", "confidence": 1},
+        "property_types": {"value": ["house"], "said": "ghar", "source": "stated", "confidence": 1},
+        "budget_max": None}})
+    assert {u.slot for u in e.slot_updates} == {"bedrooms_min", "property_types"}
+    schema = Extraction.model_json_schema()
+    assert "wants" in schema["required"] and "slot_updates" not in schema["properties"]
+    assert "property_types" in schema["$defs"]["Wants"]["required"]       # every field must be answered
+
+
 def test_a_value_outside_a_slots_choices_is_not_stored():
     # Live run: "main dealer hoon" came back as decision_maker = "dealer".
     p = plan(LeadState(1), ext("more_options", slots=[("decision_maker", "dealer", "stated", 1.0),
@@ -211,7 +234,52 @@ def test_an_inferred_purpose_is_not_known():
                                          ("location_id", 6655, "stated", 1.0),
                                          ("property_types", ["flat"], "stated", 1.0)]))
     assert p.search is None and p.ask == "purpose"
-    assert p.preview == {"property_types": ["flat"], "location_id": 6655}
+    assert p.preview["property_types"] == ["flat"] and p.preview["location_id"] == 6655
+
+
+def test_the_preview_counts_with_everything_the_buyer_said():
+    # Live run: "120 gaz plot, 1 crore tak" was counted as "all plots", and the reply guessed
+    # that none matched. The count now uses size and budget too.
+    p = plan(LeadState(1), ext("search", slots=[("property_types", ["plot"], "stated", 1.0),
+                                                ("size_min_sqyd", 120, "stated", 1.0),
+                                                ("budget_max", 10_000_000, "stated", 1.0)]))
+    assert p.preview["size_min_sqyd"] == 120 and p.preview["budget_max"] == 10_000_000
+    assert p.preview["show_both"] is False
+
+
+def test_asked_again_to_see_options_shows_both_ways():
+    # Live run: "jo hai woh dikha dein" got the buy-or-rent question again and no listings.
+    state = LeadState(1, slots={"property_types": stated(["house"])}, asked={"purpose": 1})
+    assert plan(state, ext("more_options")).preview["show_both"] is True
+    assert plan(LeadState(1), ext("more_options")).preview["show_both"] is True
+
+
+def test_more_options_leaves_out_what_they_have_seen():
+    # Live run: "aur options dikhayein" returned the same three listings.
+    seen = [KnownListing(i, 100 + i, "shown", 1, "available", 1, "available") for i in (5, 6)]
+    rejected = KnownListing(7, 107, "rejected", 1, "available", 1, "available")
+    state = LeadState(1, slots={"purpose": stated("sale")}, listings=[*seen, rejected])
+    assert sorted(plan(state, ext("more_options")).search["exclude_listing_ids"]) == [5, 6, 7]
+    assert plan(state, ext("search")).search["exclude_listing_ids"] == [7]   # a new search: only rejected
+
+
+def test_a_seller_is_not_searched_for_and_their_property_is_not_their_wants():
+    # Live run: a seller was shown three houses for sale, and the alert read "Wants: buy · house".
+    e = Extraction(language="roman_urdu", intents=[Intent(type="seller")], slot_updates=[
+        SlotUpdate(slot="purpose", value="sale", said="bechna hai", source="stated", confidence=1.0),
+        SlotUpdate(slot="location_id", value=21109, said="Askari 6", source="stated", confidence=1.0),
+        SlotUpdate(slot="size_max_sqyd", value=375, said="375 gaz", source="stated", confidence=1.0)])
+    p = plan(LeadState(1), e)
+    assert p.slot_updates == {} and p.search is None and p.preview is None
+    assert p.handoff["reason"] == "seller"
+    assert p.handoff["open_items"] == ["Wants to sell their property: Askari 6, 375 gaz"]
+
+
+def test_a_visit_request_is_remembered():
+    p = plan(LeadState(1), ext("listing_question", signals=["visit_request"]))
+    assert p.slot_updates["wants_visit"]["value"] is True and p.handoff["reason"] == "visit_request"
+    slots = {"purpose": stated("sale"), "budget_max": stated(60_000_000), "wants_visit": stated(True)}
+    assert plan(LeadState(1, slots=slots), ext("thanks")).scores["intent"] == 35   # 20 budget + 15 visit
 
 
 def test_a_new_place_by_name_replaces_the_old_place():

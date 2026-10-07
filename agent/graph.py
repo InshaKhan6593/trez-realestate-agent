@@ -21,7 +21,7 @@ from psycopg.rows import dict_row
 
 from . import handoff as handoffs
 from . import trace
-from .context import TurnContext, load_context
+from .context import TurnContext, has_urdu_script, load_context, unheard
 from .extract import build_prompt as extract_prompt
 from .extract import extract
 from .llm import LLM, Usage
@@ -33,7 +33,7 @@ from .respond import ReplyDraft, respond
 from .respond import build_prompt as respond_prompt
 from .runner import Facts, run_tools
 from .schemas import Extraction
-from .validate import check, template
+from .validate import check, prompt_words, template
 
 MAX_ATTEMPTS = 2
 
@@ -74,6 +74,7 @@ class TurnState(TypedDict, total=False):
     text: str
     used_template: bool
     template_listing_ids: list[int]
+    prompt_words: set[str]
     usage: Usage
 
 
@@ -143,13 +144,28 @@ def _filled(obj) -> dict:
 
 async def n_extract(state: TurnState, config) -> TurnState:
     _, llm = _deps(config)
-    messages = extract_prompt(state["ctx"], state["places"], state["discussed"], state.get("last_list"))
-    return {"ext": await extract(llm, state["usage"], messages)}
+    ctx = state["ctx"]
+    messages = extract_prompt(ctx, state["places"], state["discussed"], state.get("last_list"))
+    ext = await extract(llm, state["usage"], messages)
+    # Language, where code can tell: Urdu script is read from the letters; a
+    # message with no words (voice note, location, image) keeps the language
+    # the buyer has been writing in rather than a guess.
+    words = [m["text"] for m in ctx.burst if m.get("text") and m.get("type") in ("text", "image", "video", "document")]
+    if has_urdu_script(words):
+        ext.language = "urdu"
+    elif not words and ctx.language:
+        ext.language = ctx.language
+    return {"ext": ext}
 
 
 async def n_plan(state: TurnState, config) -> TurnState:
     with trace.step("plan-turn", as_type="chain", input=state["ext"].model_dump(exclude_defaults=True)) as obs:
         p = plan(state["ctx"].state, state["ext"])
+        # A voice note or picture we cannot take in goes to a person, who can.
+        kinds = unheard(state["ctx"].burst)
+        if kinds:
+            add_unanswered(p, state["ctx"].state, [f"the buyer sent a {'voice note' if k == 'audio' else k}"
+                                                   " the bot cannot read" for k in dict.fromkeys(kinds)])
         obs.update(output=_filled(p))
     return {"plan": p}
 
@@ -162,6 +178,7 @@ async def n_tools(state: TurnState, config) -> TurnState:
         if facts.search is not None:
             apply_scores(p, ctx.state, state["ext"], facts.search["total"])
         after_tools(p, unclear_listing=bool(facts.unresolved_refs) and not facts.listings,
+                    listing_not_found=bool(p.listing_refs) and not facts.listings and not facts.unresolved_refs,
                     unclear_place=facts.location is not None and facts.location["status"] == "ask")
         obs.update(output={"tools": [c["tool"] for c in facts.tool_calls], "scores": p.scores, "ask": p.ask,
                            "prices_the_reply_may_state": sorted(facts.allowed_prices)})
@@ -178,7 +195,7 @@ async def n_respond(state: TurnState, config) -> TurnState:
                          "Your previous reply was rejected: " + "; ".join(state["problems"])
                          + ". Write it again, fixing exactly these problems."})
     draft = await respond(llm, state["usage"], messages)
-    return {"draft": draft, "attempts": state.get("attempts", 0) + 1}
+    return {"draft": draft, "attempts": state.get("attempts", 0) + 1, "prompt_words": prompt_words(messages)}
 
 
 async def n_check(state: TurnState, config) -> TurnState:
@@ -190,7 +207,7 @@ async def n_check(state: TurnState, config) -> TurnState:
     draft = state["draft"]
     with trace.step("check-reply", as_type="guardrail", input=draft.model_dump(),
                     metadata={"attempt": state["attempts"]}) as obs:
-        problems = check(draft, state["plan"], state["facts"], buyer_amounts)
+        problems = check(draft, state["plan"], state["facts"], buyer_amounts, state.get("prompt_words", set()))
         obs.update(output={"passed": not problems, "problems": problems},
                    level="WARNING" if problems else None,
                    status_message="; ".join(problems)[:500] if problems else None)

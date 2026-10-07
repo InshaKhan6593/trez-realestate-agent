@@ -189,6 +189,19 @@ def test_a_second_request_adds_to_the_open_handoff(lead):
 
 
 @db
+def test_a_stronger_reason_replaces_a_weaker_one_on_an_open_handoff(lead):
+    # Live run: the record kept "not in data" while the alert led with "visit request".
+    lead_id, _ = lead
+    first = run(handoff.request_handoff, lead_id, "not_in_data", ["installments?"])
+    second = run(handoff.request_handoff, lead_id, "visit_request")
+    third = run(handoff.request_handoff, lead_id, "not_in_data", ["parking?"])     # weaker: kept
+    assert first.handoff_id == second.handoff_id == third.handoff_id
+    with psycopg.connect(DB_URL) as conn:
+        assert conn.execute("SELECT reason FROM handoffs WHERE id = %s", (first.handoff_id,)).fetchone() == ("visit_request",)
+    assert "Reason: visit request" in third.alert
+
+
+@db
 def test_take_then_release(lead):
     lead_id, (fahad, _) = lead
     run(handoff.request_handoff, lead_id, "asked_for_human")

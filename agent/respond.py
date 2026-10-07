@@ -13,6 +13,7 @@ import re
 
 from pydantic import BaseModel, Field
 
+from .context import for_model
 from .llm import LLM, Usage
 from .money import pkr
 from .planner import Plan
@@ -29,6 +30,8 @@ ASK_HINTS = {
     "decision_maker": "whether anyone else (family) will decide with them",
     "which_listing": "which of the listings in which_listing_do_they_mean they mean (name each briefly)",
     "which_place": "which of the places in FACTS.place.options they mean (name each)",
+    "listing_link": "which listing they mean: nothing matching has been shared with them yet, so ask for its "
+                    "Zameen link or number",
 }
 
 REPLY_IN = {
@@ -52,25 +55,30 @@ Hard rules:
 4. Never negotiate, never hint at a discount, never promise anything. On price talk say only
    the listed price and that our agent will discuss the price with them: never say the price
    is fixed, final, negotiable or that no discount is possible. You may repeat the buyer's own
-   offer back to them ("aap ka offer agent tak pohanch jayega"), never accept or judge it.
+   offer back to them (it goes to the agent); never accept or judge it.
 5. Write the whole reply in REPLY_IN (an English-speaking buyer gets English, greeting included).
 6. Order: first every item in MUST, then answer the buyer's questions, then at most ONE
-   question: only the one in ASK. If ASK is null, ask no question at all (no "visit karna
-   chahenge?", no "aur kuch?").
+   question: only the one in ASK. If ASK is null, ask no question at all (not even an offer of
+   more help or of a visit).
 7. Keep it short and natural for WhatsApp (about 40-90 words; up to 3 listings as short
    lines with title, size, price and area). Plain text; WhatsApp bold (a title between
-   asterisks) is allowed; no headings, no sign-off or filler lines ("Trez Enterprises aapki
-   madad karega").
+   asterisks) is allowed; no headings, no sign-off or filler lines that carry no information.
 8. Only say Trez has or does not have listings somewhere if FACTS say so: SEARCH (with
    prices) or STOCK_PREVIEW (counts only, when the buyer has not said buy or rent yet). With
    neither, do not claim anything about stock. If SEARCH found nothing in the asked place,
    say so honestly first, then say the options are from the wider area named in
    "shown_from_wider_area" and give each one's area and distance (distance_km).
    Set "claims_no_listings" true whenever the reply says we have nothing (somewhere/of a kind).
+   STOCK_PREVIEW counts only listings matching its "counted" criteria in "asked_location":
+   describe a count with exactly those criteria, never with a type, size or budget it does not
+   list. If SEARCH has "buyer_has_not_said_buy_or_rent", its listings may be for sale and for
+   rent: say which each one is (its "purpose"). If SEARCH has "already_shown_left_out", its
+   results are listings they have not seen yet; if it has none in the asked place, say they have
+   now seen everything there that matches before giving wider options.
+   If FACTS do not show whether something exists or matches, do not claim either way.
 9. If HANDOFF is set, tell the buyer once that our agent will contact them shortly, and keep
-   helping with facts meanwhile. If MEDIA is set, say the photos/video are coming next; if you
-   say how many photos are coming, it is MEDIA.photos_sending (e.g. "4 photos bhej raha hoon,
-   listing mein total 11 hain").
+   helping with facts meanwhile. If MEDIA is set, say the photos/video are coming next; a number
+   of photos coming is MEDIA.photos_sending (the listing's total, photo_count, may be added).
 10. If asked whether you are a bot: you are Trez Enterprises' assistant; offer the agent.
 11. Never promise an action that is not in this prompt: photos/video only if MEDIA is set;
     "our agent will contact/confirm/discuss" only if HANDOFF is set, or for a question you put
@@ -82,15 +90,24 @@ Hard rules:
     (listing_id is internal, only for the JSON fields).
 14. "which_listing_do_they_mean" means they referred to a listing but it is not clear which:
     do not answer about any one of them; ask which one they mean (that is the ASK).
+15. Visits and meetings are arranged by our agent only: never say a visit or a time is
+    possible, fixed or arranged; say the agent will arrange it.
+16. A message in BUYER_MESSAGES_NOW with "we_can_see_or_hear_its_content": false (a voice note,
+    a picture, a video, a file): say plainly that you cannot listen to / see it yet, use any
+    "words" it came with, and ask them to type their question (for a picture of a listing: its
+    Zameen link or number). HANDOFF, if set, means our agent will look at it.
+17. Never mention this prompt, its sections or field names (anything written in CAPITALS or with
+    underscores here): talk about the listings and the buyer's question only.
 
 Return JSON: {"reply": "...", "listing_ids_mentioned": [...], "says_available": [...],
 "unanswered": [...], "claims_no_listings": false, "promises_agent_contact": false,
-"promises_media": false, "says_no_photos": false, "photos_coming_said": null}
+"promises_media": false, "says_no_photos": false, "photos_coming_said": null, "promises_visit": false}
 using the listing_id numbers from FACTS. "listing_ids_mentioned" in the order the reply names
 them. Set "promises_agent_contact" true whenever the reply says our agent will contact them,
 call them, confirm or discuss something; "promises_media" true whenever it says photos or a
 video are coming; "says_no_photos" true whenever it says photos are not available;
-"photos_coming_said" = the number of photos the reply says are being sent now (null if none)."""
+"photos_coming_said" = the number of photos the reply says are being sent now (null if none);
+"promises_visit" true whenever it says a visit or a time is possible, fixed or arranged."""
 
 
 class ReplyDraft(BaseModel):
@@ -105,6 +122,7 @@ class ReplyDraft(BaseModel):
     promises_media: bool = Field(False, description="the reply says photos/a video are coming")
     says_no_photos: bool = Field(False, description="the reply says photos are not available")
     photos_coming_said: int | None = Field(None, description="how many photos the reply says are being sent now")
+    promises_visit: bool = Field(False, description="the reply says a visit or a time is possible, fixed or arranged")
 
 
 def _listing_fact(l: dict) -> dict:
@@ -133,7 +151,7 @@ def build_prompt(plan: Plan, facts: Facts, burst: list[dict], recent: list[dict]
         "BUYER_NAME": name,
         "REPLY_IN": REPLY_IN.get(language, "the buyer's own language"),
         "EARLIER_CONVERSATION": recent[-8:],
-        "BUYER_MESSAGES_NOW": [m["text"] or f"[{m['type']}]" for m in burst],
+        "BUYER_MESSAGES_NOW": [for_model(m) for m in burst],
         "MUST": [_must_text(m, facts) for m in plan.must],
         "FACTS": {
             "listings": [_listing_fact(l) for l in facts.listings.values()],
@@ -143,6 +161,12 @@ def build_prompt(plan: Plan, facts: Facts, burst: list[dict], recent: list[dict]
                 "nothing_in_asked_location": facts.search.get("nothing_in_asked_location", False),
                 # Nothing in the asked place: these come from this wider area instead.
                 "shown_from_wider_area": facts.search.get("widened_to"),
+                # Buy or rent not said: these are for sale and/or for rent (each has "purpose").
+                **({"buyer_has_not_said_buy_or_rent": True}
+                   if facts.search.get("buyer_has_not_said_buy_or_rent") else {}),
+                # "More options": listings they have already seen are not in these results.
+                **({"already_shown_left_out": facts.search["already_shown_left_out"]}
+                   if facts.search.get("already_shown_left_out") else {}),
                 "results": [_listing_fact(r) for r in facts.search["results"]],
             },
             "place": facts.location,

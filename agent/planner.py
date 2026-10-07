@@ -82,6 +82,7 @@ class Plan:
     want_video: bool = False
     search: dict | None = None                               # Criteria fields, from slots
     preview: dict | None = None                              # buy/rent unknown: count stock both ways
+    more_options: bool = False                               # "aur options": listings not shown yet
     location_text: str | None = None                         # to resolve with find_location
     place_words: str | None = None                           # their words, to check the model's place pick
     ask: str | None = None
@@ -107,7 +108,10 @@ def merge_slots(current: dict, ext: Extraction, ignored: list[dict] | None = Non
     a slot's fixed choices is not stored; it goes to `ignored` (shown in the trace)."""
     updates: dict[str, dict] = {}
     for u in ext.slot_updates:
-        if u.value in (None, "", []):
+        value = _typed(u.slot, u.value)
+        if value in (None, "", []):
+            if u.value not in (None, "", []) and ignored is not None:   # e.g. "3 ya 4" for a number
+                ignored.append({"slot": u.slot, "value": u.value, "why": "not a usable value"})
             continue
         if u.slot in SLOT_CHOICES and str(u.value) not in SLOT_CHOICES[u.slot]:
             if ignored is not None:
@@ -116,7 +120,7 @@ def merge_slots(current: dict, ext: Extraction, ignored: list[dict] | None = Non
         before = current.get(u.slot)
         if before and before.get("source") == "stated" and u.source == "inferred":
             continue
-        updates[u.slot] = {"value": u.value, "source": u.source, "confidence": u.confidence}
+        updates[u.slot] = {"value": value, "source": u.source, "confidence": u.confidence}
     return updates
 
 
@@ -133,7 +137,7 @@ def score(slots: dict, ext: Extraction, stock_matches: int | None) -> dict:
     intent += {"cash": 15, "installments": 8, "bank_loan": 8}.get(str((slots.get("payment_mode") or {}).get("value")), 0)
     intent += 10 if known("use") else 0
     intent += 10 if known("decision_maker") else 0
-    intent += 15 * sum(s in ext.signals for s in ("visit_request", "cash_ready"))
+    intent += 15 * ("cash_ready" in ext.signals) + 15 * known("wants_visit")
     ready_to_pay = known("ready_to_pay")          # offered a token: the strongest signal there is
     intent += 40 if ready_to_pay else 0
     if "dealer" in ext.signals:
@@ -154,15 +158,23 @@ def score(slots: dict, ext: Extraction, stock_matches: int | None) -> dict:
 
 def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None) -> Plan:
     p = Plan()
+    types = {i.type for i in ext.intents}
     p.slot_updates = merge_slots(state.slots, ext, p.ignored_slots)
-    # A token offer is a fact about the buyer, not just this message: remembered,
-    # so the lead stays hot on the next turn too.
+    if "seller" in types:
+        # Someone selling describes THEIR property; slots are what a buyer wants.
+        # Kept visible (trace), not stored as wants; the agent reads their message.
+        p.ignored_slots += [{"slot": k, "value": v["value"], "why": "seller's own property"}
+                            for k, v in p.slot_updates.items()]
+        p.slot_updates = {}
+    # Signals that say what the buyer is ready to do are remembered, so the lead
+    # stays hot / warm on the next turn too: a token offer, asking to visit.
     if "token_or_bayana" in ext.signals:
         p.slot_updates["ready_to_pay"] = {"value": True, "source": "stated", "confidence": 1.0}
+    if "visit_request" in ext.signals:
+        p.slot_updates["wants_visit"] = {"value": True, "source": "stated", "confidence": 1.0}
     slots = {**state.slots, **p.slot_updates}
     p.returning = (state.hours_since_last_message or 0) >= RETURNING_AFTER_HOURS
     p.greet = state.hours_since_last_message is None or any(i.type == "greeting" for i in ext.intents)
-    types = {i.type for i in ext.intents}
 
     # --- what changed since we last told them (§9, report first) ----------
     if p.returning:
@@ -195,30 +207,23 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
     p.reject = [r.model_dump(exclude_none=True) for r in ext.rejected]
 
     # --- searching ---------------------------------------------------------
-    wants_search = bool(types & {"search", "more_options"}) or (
+    wants_search = "seller" not in types and (bool(types & {"search", "more_options"}) or (
         not p.listing_refs and any(k in p.slot_updates for k in
                                    ("location_id", "budget_max", "property_types", "bedrooms_min"))) or (
         # They answered our "which place?": show them what is there.
-        "location_id" in p.slot_updates and "location_id" in state.open_questions)
+        "location_id" in p.slot_updates and "location_id" in state.open_questions))
+    # "More options" means listings they have not seen yet; otherwise only the
+    # ones they turned down are left out.
+    p.more_options = "more_options" in types
+    exclude = [k.listing_id for k in state.listings if p.more_options or k.relation == "rejected"]
     if wants_search and _known(slots, "purpose"):
-        p.search = {
-            "purpose": slots["purpose"]["value"],
-            "property_types": _as_list((slots.get("property_types") or {}).get("value")),
-            "location_id": (slots.get("location_id") or {}).get("value"),
-            "budget_min": (slots.get("budget_min") or {}).get("value"),
-            "budget_max": (slots.get("budget_max") or {}).get("value"),
-            "size_min_sqyd": (slots.get("size_min_sqyd") or {}).get("value"),
-            "size_max_sqyd": (slots.get("size_max_sqyd") or {}).get("value"),
-            "bedrooms_min": (slots.get("bedrooms_min") or {}).get("value"),
-            "exclude_listing_ids": [k.listing_id for k in state.listings if k.relation == "rejected"],
-        }
+        p.search = {"purpose": slots["purpose"]["value"], **_criteria(slots), "exclude_listing_ids": exclude}
     elif wants_search:
-        # Buy or rent not said yet: count what Trez has both ways (no prices),
-        # so the reply can be honest about stock while asking which they want.
-        p.preview = {
-            "property_types": _as_list((slots.get("property_types") or {}).get("value")),
-            "location_id": (slots.get("location_id") or {}).get("value"),
-        }
+        # Buy or rent not said yet: count what matches everything they DID say,
+        # each way. The runner shows listings when only one way has any, or
+        # both ways (labelled) once they have asked again to see options.
+        p.preview = {**_criteria(slots), "exclude_listing_ids": exclude,
+                     "show_both": "more_options" in types or state.asked.get("purpose", 0) >= 1}
     if "location_text" in p.slot_updates and "location_id" not in p.slot_updates:
         # A new place by name: the old place no longer applies. It is looked up;
         # until then (or if we have nothing there) the search is not tied to a place.
@@ -235,6 +240,9 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
 
     # --- scores and handoff -------------------------------------------------
     apply_scores(p, state, ext, stock_matches)
+    if "seller" in types and p.handoff is not None:
+        said = [u.said for u in ext.slot_updates if u.said and u.slot != "purpose"]
+        p.handoff["open_items"].append("Wants to sell their property" + (f": {', '.join(said)}" if said else ""))
 
     # --- the one question ---------------------------------------------------
     quiet = "not_interested" in types or p.handoff is not None or state.handoff_state != "none"
@@ -274,11 +282,14 @@ def _handoff_rank(reason: str) -> int:
     return HANDOFF_ORDER.index(reason) if reason in HANDOFF_ORDER else len(HANDOFF_ORDER)
 
 
-def after_tools(p: Plan, *, unclear_listing: bool, unclear_place: bool = False) -> None:
+def after_tools(p: Plan, *, unclear_listing: bool, unclear_place: bool = False,
+                listing_not_found: bool = False) -> None:
     """The buyer meant a listing or a place we cannot pin down: the one question
     is 'which one?' (a guess would answer about the wrong house or area)."""
     if unclear_listing:
         p.ask = "which_listing"
+    elif listing_not_found:
+        p.ask = "listing_link"
     elif unclear_place:
         p.ask = "which_place"
 
@@ -290,6 +301,35 @@ def add_unanswered(p: Plan, state: LeadState, unanswered: list[str]) -> None:
     if p.handoff is None:
         p.handoff = {"reason": "not_in_data", "reasons": ["not_in_data"], "open_items": []}
     p.handoff["open_items"] = list(dict.fromkeys([*p.handoff["open_items"], *unanswered]))
+
+
+NUMBER_SLOTS = {"location_id": int, "budget_min": int, "budget_max": int, "bedrooms_min": int,
+                "size_min_sqyd": float, "size_max_sqyd": float}
+
+
+def _typed(slot: str, value):
+    """A slot value in the type the code works with, whatever form the model sent
+    it in ("3" -> 3, "flat" -> ["flat"]). Not convertible -> None."""
+    if value in (None, "", []):
+        return None
+    if slot in NUMBER_SLOTS:
+        try:
+            number = float(str(value).replace(",", "").strip())
+        except ValueError:
+            return None
+        return NUMBER_SLOTS[slot](number) if number > 0 else None
+    if slot == "property_types":
+        return _as_list(value)
+    return value
+
+
+def _criteria(slots: dict) -> dict:
+    """Everything the buyer said they want, as search criteria (purpose aside)."""
+    value = lambda name: (slots.get(name) or {}).get("value")  # noqa: E731
+    return {"property_types": _as_list(value("property_types")), "location_id": value("location_id"),
+            "budget_min": value("budget_min"), "budget_max": value("budget_max"),
+            "size_min_sqyd": value("size_min_sqyd"), "size_max_sqyd": value("size_max_sqyd"),
+            "bedrooms_min": value("bedrooms_min")}
 
 
 def _words(text: str) -> str:

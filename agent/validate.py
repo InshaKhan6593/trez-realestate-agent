@@ -9,12 +9,14 @@ facts are checked, not style:
 - "our agent will..." only when the agent is involved; photos "coming" only when
   they are being sent, and only as many as are sent; "no photos" only when the
   listing has none
+- no visit arranged or confirmed (the agent does that); none of the prompt's own words
 - at most one question
 Fail -> one regeneration with the problems listed -> fail again -> template.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .money import amounts_in, pkr, same_amount
@@ -23,15 +25,49 @@ from .respond import ReplyDraft
 from .runner import Facts
 
 INTERNAL_FIELDS = ("listing_ids_mentioned", "says_available", "promises_agent_contact", '"reply"')
+
+
+def prompt_words(messages: list[dict]) -> set[str]:
+    """The prompt's own vocabulary, read from the prompt the responder got: its
+    section names (FACTS, ASK, ...) and every snake_case key (stock_preview,
+    listing_id, ...). None of these belongs in a WhatsApp message, and reading
+    them from the prompt keeps this check right when the prompt changes."""
+    import json
+    words: set[str] = set()
+
+    def walk(node, top=False):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if (top and k.isupper()) or "_" in k:
+                    words.add(k)
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    for m in messages:
+        if m.get("role") == "user":
+            try:
+                walk(json.loads(m["content"]), top=True)
+            except (ValueError, TypeError):
+                pass
+    return words
 # The word the buyer reads when the agent is brought in (Roman Urdu/English, Urdu script).
 AGENT_WORDS = ("agent", "ایجنٹ")
 
 
-def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int]) -> list[str]:
+def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int],
+          internal_words: set[str] = frozenset()) -> list[str]:
     problems: list[str] = []
     # The model's own JSON pasted into the message (live run: 'Filename: data.json {"reply": ...').
     if any(f in draft.reply for f in INTERNAL_FIELDS):
         problems.append("the reply contains the JSON answer itself; write only the WhatsApp message in \"reply\"")
+    # The prompt's own words in the message (live run: "FACTS mein kuch mention nahi hai").
+    leaked = sorted(w for w in internal_words if re.search(rf"(?<![A-Za-z_]){re.escape(w)}(?![A-Za-z_])", draft.reply))
+    if leaked:
+        problems.append(f"the reply uses our internal words {leaked}; talk about the listing, never about our data")
+    # Visits are arranged by the agent only (live run: "Aap kal dekhne aa sakte hain").
+    if draft.promises_visit:
+        problems.append("the reply arranges or confirms a visit; only our agent arranges visits, say they will")
     # A MUST item tells the model to state these (e.g. the old and the new price).
     must_prices = {m[k] for m in plan.must for k in ("was", "now") if isinstance(m.get(k), int)}
     allowed = facts.allowed_prices | buyer_amounts | must_prices

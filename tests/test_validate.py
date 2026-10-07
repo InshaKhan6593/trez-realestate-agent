@@ -78,6 +78,40 @@ def test_bringing_in_the_agent_without_saying_so_is_caught():
     assert check(draft, Plan(ask="bedrooms_min", handoff={"reason": "negotiation"}), Facts(), set()) == []
 
 
+def test_the_prompts_own_words_never_reach_the_buyer():
+    # Live run: "Pehle wale ka advance ... FACTS mein kuch mention nahi hai".
+    from agent.respond import build_prompt
+    from agent.validate import prompt_words
+    words = prompt_words(build_prompt(Plan(), Facts(), [{"type": "text", "text": "advance?"}], [], "roman_urdu", None))
+    assert {"FACTS", "ASK", "stock_preview", "which_listing_do_they_mean"} <= words
+    leak = ReplyDraft(reply="Advance ke baare mein FACTS mein kuch mention nahi hai.")
+    assert check(leak, Plan(), Facts(), set(), words) == [
+        "the reply uses our internal words ['FACTS']; talk about the listing, never about our data"]
+    fine = ReplyDraft(reply="Listing mein advance ka zikr nahi hai; Sector J ka flat PKR 5.5 Crore ka hai.")
+    assert check(fine, Plan(), Facts(), {55_000_000}, words) == []
+
+
+def test_a_visit_is_never_arranged_by_the_bot():
+    # Live run: "Aap kal dekhne aa sakte hain".
+    draft = ReplyDraft(reply="Aap kal aa sakte hain.", promises_visit=True)
+    assert check(draft, Plan(handoff={"reason": "visit_request"}), Facts(), set()) == [
+        "the reply arranges or confirms a visit; only our agent arranges visits, say they will"]
+
+
+# --- what the models are told about a message ----------------------------------
+
+def test_messages_we_cannot_take_in_are_described_as_such():
+    from agent.context import for_model, has_urdu_script, unheard
+    burst = [{"type": "audio", "text": None}, {"type": "image", "text": "ye wala?"},
+             {"type": "location", "text": "[location 24.9,67.1] Gulistan-e-Jauhar"},
+             {"type": "sticker", "text": None}, {"type": "text", "text": "salam"}]
+    assert for_model(burst[0]) == {"kind": "voice_note", "words": None, "we_can_see_or_hear_its_content": False}
+    assert for_model(burst[1])["words"] == "ye wala?" and for_model(burst[4]) == "salam"
+    assert for_model(burst[2])["we_can_see_or_hear_its_content"] is True
+    assert unheard(burst) == ["audio", "image"]                # a sticker needs no one
+    assert has_urdu_script(["پہلے والے کی تصاویر"]) and not has_urdu_script(["pehle wale ki photos"])
+
+
 # --- photos -------------------------------------------------------------------
 
 def test_photos_promised_but_not_being_sent():
@@ -155,6 +189,15 @@ def test_an_exact_or_single_place_is_not_ambiguous():
     assert places_named(TREE, "Askari 5 Sector J") == [5]           # punctuation and case ignored
     assert places_named(TREE, "gulshan") == [7]                     # Block 2 is inside it
     assert places_named(TREE, "Sunrise Towers") == [2]
+
+
+def test_a_full_place_name_in_the_message_is_found():
+    from agent.locations import places_in_text
+    assert places_in_text(TREE, "Askari 6 villa rate?") == [6]
+    assert places_in_text(TREE, "askari 5 sector j mein flat") == [5]          # the more specific one
+    assert places_in_text(TREE, "Askari 6 ya Gulshan-e-Iqbal?") == [6, 7]      # two places: caller decides
+    assert places_in_text(TREE, "askari mein ghar") == []                      # not a full name: model's job
+    assert places_in_text(TREE, "Sunrise Towers ka rate") == [2]               # a new project, no code change
 
 
 def test_words_naming_no_place_leave_it_to_the_model():

@@ -371,6 +371,107 @@ def test_a_name_that_fits_several_places_is_asked_not_searched_everywhere(lead, 
     assert q("SELECT slot FROM open_questions WHERE lead_id = %s AND status = 'open'", lead) == [("location_id",)]
 
 
+def _one_way_only():
+    """A property type today's stock has only for sale (or only for rent). -> (type, purpose) or None."""
+    rows = q("""SELECT property_type, array_agg(DISTINCT purpose) FROM listings WHERE status = 'available'
+                GROUP BY property_type HAVING count(DISTINCT purpose) = 1""")
+    return (rows[0][0], rows[0][1][0]) if rows else None
+
+
+def test_buy_or_rent_unknown_but_only_one_exists_shows_the_listings(lead):
+    # Live run: "120 gaz plot, 1 crore tak": counts only, and the reply guessed "no listing".
+    found = _one_way_only()
+    if found is None:
+        pytest.skip("every property type in today's stock is listed both for sale and for rent")
+    kind, purpose = found
+    ext = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}], "slot_updates": [
+        {"slot": "property_types", "value": [kind], "source": "stated", "confidence": 1}]})
+    llm = ScriptedLLM([ext], [ReplyDraft(reply="Ye options hain. Buy karna hai ya rent?")])
+    turn(lead, f"{kind} chahiye", llm)
+    facts = json.loads(llm.prompts["responder"][0][1]["content"])["FACTS"]
+    assert facts["search"]["buyer_has_not_said_buy_or_rent"] and facts["search"]["results"]
+    assert {r["purpose"] for r in facts["search"]["results"]} == {purpose}
+    assert facts["stock_preview"]["counted"] == {"property_types": [kind]}
+
+
+def test_asked_again_without_saying_buy_or_rent_shows_both_ways(lead):
+    both = q("""SELECT property_type FROM listings WHERE status = 'available'
+                GROUP BY property_type HAVING count(DISTINCT purpose) = 2 LIMIT 1""")
+    if not both:
+        pytest.skip("no property type is listed both for sale and for rent today")
+    kind = both[0][0]
+    ext = lambda intent: Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": intent}],  # noqa: E731
+                                                    "slot_updates": [{"slot": "property_types", "value": [kind],
+                                                                      "source": "stated", "confidence": 1}]})
+    llm = ScriptedLLM([ext("search"), ext("more_options")],
+                      [ReplyDraft(reply="Buy karna hai ya rent?"), ReplyDraft(reply="Ye options hain.")])
+    turn(lead, f"{kind} chahiye", llm)                          # 1st: counts, asks buy or rent
+    first = json.loads(llm.prompts["responder"][0][1]["content"])["FACTS"]
+    assert first["search"] is None
+    turn(lead, "jo hai woh dikha dein", llm)                    # asked again: both ways, labelled
+    facts = json.loads(llm.prompts["responder"][1][1]["content"])["FACTS"]
+    assert {r["purpose"] for r in facts["search"]["results"]} == {"sale", "rent"}
+
+
+def test_a_voice_note_goes_to_the_agent_and_the_model_knows_it_cannot_hear_it(lead):
+    async def go():
+        async with await psycopg.AsyncConnection.connect(DB_URL, autocommit=True) as conn:
+            mid = (await (await conn.execute(
+                """INSERT INTO messages (lead_id, direction, wa_message_id, type, text, at)
+                   VALUES (%s, 'in', 'wamid.graph.' || gen_random_uuid(), 'audio', NULL, now()) RETURNING id""",
+                (lead,))).fetchone())[0]
+            turn_id = (await (await conn.execute("INSERT INTO turns (lead_id) VALUES (%s) RETURNING id",
+                                                 (lead,))).fetchone())[0]
+            await conn.execute("UPDATE messages SET turn_id = %s WHERE id = %s", (turn_id, mid))
+            reply = await agent_reply(conn, llm, lead, turn_id, [mid])
+            await reply.commit(conn)
+            return reply
+    llm = ScriptedLLM([Extraction.model_validate({"language": "mixed", "intents": [{"type": "other"}]})],
+                      [ReplyDraft(reply="Main abhi voice note nahi sun sakta, likh kar bata dein; agent sunega.",
+                                  promises_agent_contact=True)])
+    reply = asyncio.run(go(), loop_factory=asyncio.SelectorEventLoop)
+    sent = json.loads(llm.prompts["responder"][0][1]["content"])["BUYER_MESSAGES_NOW"]
+    assert sent == [{"kind": "voice_note", "words": None, "we_can_see_or_hear_its_content": False}]
+    assert reply.alert and "voice note the bot cannot read" in reply.alert["text"]
+
+
+def test_urdu_script_is_answered_in_urdu_script(lead):
+    # Live run: an Urdu-script message was labelled roman_urdu, and answered in Roman Urdu.
+    ext = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "greeting"}]})
+    llm = ScriptedLLM([ext], [ReplyDraft(reply="وعلیکم السلام")])
+    turn(lead, "السلام علیکم", llm)
+    assert json.loads(llm.prompts["responder"][0][1]["content"])["REPLY_IN"] == "Urdu script"
+    assert q("SELECT language FROM leads WHERE id = %s", lead) == [("urdu",)]
+
+
+def test_a_place_the_buyer_named_is_used_when_the_model_leaves_it_out(lead):
+    # Live run: "Askari 6 villa rate?" -> the model recorded no place in half the runs.
+    rows = q("""SELECT p.id, p.name FROM locations p JOIN listings l ON l.location_id = p.id
+                WHERE l.status = 'available' GROUP BY p.id, p.name ORDER BY count(*) DESC LIMIT 1""")
+    place_id, name = rows[0]
+    ext = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}]})   # no place
+    llm = ScriptedLLM([ext], [ReplyDraft(reply="Buy karna hai ya rent?")])
+    _, turn_id = turn(lead, f"{name} ka rate?", llm)
+    plan, tools = q("SELECT plan, tool_calls FROM turns WHERE id = %s", turn_id)[0]
+    assert tools[0]["tool"] == "place_in_message" and tools[0]["result"]["place_id"] == place_id
+    assert q("SELECT value FROM lead_slots WHERE lead_id = %s AND slot = 'location_id'", lead) == [(place_id,)]
+
+
+def test_a_place_that_does_not_resemble_the_buyers_words_is_not_taken(lead):
+    # Live run: "Clifton" (not one of our places) was mapped to Zamzama, a place the model
+    # knows to be nearby. A pick must resemble the buyer's words; otherwise it is a place we lack.
+    some_place = q("SELECT p.id FROM locations p JOIN listings l ON l.location_id = p.id GROUP BY p.id LIMIT 1")[0][0]
+    ext = _place_search("Qwertabad", location_id=some_place)        # a made-up place name
+    llm = ScriptedLLM([ext], [ReplyDraft(reply="Qwertabad mein hamari listings nahi hain.", claims_no_listings=True)])
+    _, turn_id = turn(lead, "Qwertabad mein khareedna hai", llm)
+    tools = q("SELECT tool_calls FROM turns WHERE id = %s", turn_id)[0][0]
+    assert tools[0]["tool"] == "check_place" and tools[0]["result"]["verdict"] == "not_our_place"
+    assert tools[0]["result"]["resemblance"] < 0.3
+    assert tools[1]["tool"] == "find_location" and tools[1]["result"]["status"] == "none"
+    slots = dict(q("SELECT slot, value FROM lead_slots WHERE lead_id = %s", lead))
+    assert "location_id" not in slots and slots["location_text"] == "Qwertabad"
+
+
 def test_asking_again_leaves_one_open_question(lead):
     greet = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}]})
     llm = ScriptedLLM([greet, greet], [ReplyDraft(reply="Buy karna hai ya rent?"),

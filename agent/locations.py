@@ -152,6 +152,33 @@ def places_named(tree: Tree, words: str, among: set[int] | None = None) -> list[
     return [p.id for p in sorted(hits, key=lambda p: p.name) if not any(a in found for a in p.path[:-1])]
 
 
+def places_in_text(tree: Tree, text: str, among: set[int] | None = None) -> list[int]:
+    """Today's places whose FULL name the buyer wrote (whole words, any case or
+    punctuation): "askari 6 villa rate?" -> Askari 6. A place inside another one
+    found wins (Sector J over Askari 5). Read from the live list, so new places
+    are found without any change here."""
+    t = f" {_plain(text)} "
+    if not t.strip():
+        return []
+    found = [p for p in tree.places.values()
+             if (among is None or p.id in among) and _plain(p.name) and f" {_plain(p.name)} " in t]
+    ids = {p.id for p in found}
+    return [p.id for p in found if not any(p.id in q.path[:-1] for q in found if q.id in ids)]
+
+
+# How much a place's name must resemble the buyer's words to be taken as what they
+# meant (pg_trgm word_similarity, 0-1). Measured on real pairs: genuine readings
+# ("ask 6" -> Askari 6, "malir cantt" -> Malir Cantonment) score 0.5 or more; a
+# different place the model knows is nearby ("Clifton" -> Zamzama) scores 0.
+RESEMBLES = 0.3
+
+
+async def resemblance(conn: AsyncConnection, words: str, name: str) -> float:
+    row = await (await conn.execute("SELECT extensions.word_similarity(lower(%s), lower(%s))",
+                                    (words, name))).fetchone()
+    return float(row[0])
+
+
 def decide(matches: list[PlaceMatch]) -> str:
     """'match' (use it), 'ask' (offer the options), or 'none' (we have nothing there)."""
     if not matches:
