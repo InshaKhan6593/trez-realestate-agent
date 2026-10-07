@@ -6,6 +6,8 @@ later goes through exactly this.
 
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -49,6 +51,23 @@ def unheard(burst: list[dict]) -> list[str]:
     person should look at (a sticker carries no question)."""
     return [m["type"] for m in burst if m.get("type") not in ("sticker", "reaction")
             and not _CAN_READ.get(m.get("type"), False)]
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"\w+", (text or "").casefold()))
+
+
+def said_in(said: str | None, texts: list[str]) -> bool:
+    """Are the words the model quotes as evidence really in the buyer's messages?
+    Compared word by word (order and punctuation do not matter). The model copies
+    them exactly, so a short quote must be there in full and a longer one at least
+    three quarters (a shared common word alone, "hai", is not evidence). A value
+    whose evidence is not in the messages was not said now."""
+    quoted, written = _words(said or ""), set().union(*(_words(t) for t in texts)) if texts else set()
+    if not quoted:
+        return False
+    needed = len(quoted) if len(quoted) <= 3 else -(-3 * len(quoted) // 4)
+    return len(quoted & written) >= needed
 
 
 def has_urdu_script(texts: list[str]) -> bool:

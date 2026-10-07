@@ -16,6 +16,7 @@ Fail -> one regeneration with the problems listed -> fail again -> template.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -56,7 +57,7 @@ AGENT_WORDS = ("agent", "ایجنٹ")
 
 
 def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int],
-          internal_words: set[str] = frozenset()) -> list[str]:
+          internal_words: set[str] = frozenset(), *, handoff_open: bool = False) -> list[str]:
     problems: list[str] = []
     # The model's own JSON pasted into the message (live run: 'Filename: data.json {"reply": ...').
     if any(f in draft.reply for f in INTERNAL_FIELDS):
@@ -65,6 +66,14 @@ def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int],
     leaked = sorted(w for w in internal_words if re.search(rf"(?<![A-Za-z_]){re.escape(w)}(?![A-Za-z_])", draft.reply))
     if leaked:
         problems.append(f"the reply uses our internal words {leaked}; talk about the listing, never about our data")
+    # Every feature the reply says a listing has must be written in a listing's facts
+    # (live run: "parking bhi hai" for a house whose listing says nothing about parking).
+    facts_text = json.dumps([*facts.listings.values(), *(facts.search or {}).get("results", []), *facts.candidates],
+                            ensure_ascii=False, default=str).lower()
+    unsupported = [f for f in draft.features_said if f.strip() and f.strip().lower() not in facts_text]
+    if unsupported:
+        problems.append(f"the reply says a listing has {unsupported}, which its facts do not say; claim only "
+                        "features written in FACTS")
     # Visits are arranged by the agent only (live run: "Aap kal dekhne aa sakte hain").
     if draft.promises_visit:
         problems.append("the reply arranges or confirms a visit; only our agent arranges visits, say they will")
@@ -85,6 +94,10 @@ def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int],
         if "listing_id" in must and must["listing_id"] not in draft.listing_ids_mentioned:
             problems.append(f"a required update about listing {must['listing_id']} is missing")
 
+    found_nothing = facts.search is not None and not facts.search.get("results")
+    if found_nothing and not draft.claims_no_listings:
+        # Live run: "Yeh list kar raha hoon" when the search had found nothing.
+        problems.append("the search found nothing that matches; say so plainly (and set claims_no_listings)")
     if draft.claims_no_listings:
         searched_nothing = facts.search is not None and facts.search.get("nothing_in_asked_location", facts.search["total"] == 0)
         preview_nothing = facts.stock_preview is not None and not (
@@ -96,7 +109,7 @@ def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int],
     # "Our agent will contact/confirm" is true only if the agent will be involved:
     # a handoff, a question the facts cannot answer (handed off), or an
     # unverified listing (the agent must confirm it).
-    agent_involved = bool(plan.handoff) or bool(draft.unanswered) or any(
+    agent_involved = handoff_open or bool(plan.handoff) or bool(draft.unanswered) or any(
         l["availability"] == "unverified" for l in facts.listings.values())
     if draft.promises_agent_contact and not agent_involved:
         problems.append("the reply says our agent will contact them, but no handoff was made")

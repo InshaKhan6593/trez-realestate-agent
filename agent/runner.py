@@ -105,8 +105,9 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
         with _tool(facts, "check_place", {"words": plan.place_words, "chosen": chosen}) as call:
             tree, offered = await load_tree(conn), {c["id"] for c in await place_choices(conn)}
             named = places_named(tree, plan.place_words, offered)
-            inside = len(named) == 1 and chosen in tree.places and named[0] in tree.places[chosen].path
-            verdict = ("ask" if len(named) > 1 else "keep" if not named or inside else "use_named")
+            # Their words are the exact name of one place: that place, even when the model
+            # picked a part of it (live run: "Askari 5" searched only Sector F / Sector G).
+            verdict = ("ask" if len(named) > 1 else "keep" if not named or named[0] == chosen else "use_named")
             likeness = None
             if verdict == "keep" and not named and chosen in tree.places and not has_urdu_script([plan.place_words]):
                 # Words that name none of our places: the model's reading is kept only if
@@ -205,14 +206,18 @@ async def run_tools(conn: AsyncConnection, state: LeadState, plan: Plan, texts: 
     if plan.preview is not None:
         wanted = {k: v for k, v in plan.preview.items() if k != "show_both"}
         with _tool(facts, "stock_preview", wanted) as call:
-            found = {}
+            found, asked = {}, None
             for purpose in ("sale", "rent"):
                 result = await search_listings(conn, Criteria(
                     purpose=purpose, **{k: v for k, v in wanted.items() if v not in (None, [])}))
+                asked = asked or result.get("asked_location")
                 found[purpose] = result if result["stage"] == "exact" and result["total"] else None
             counts = {"for_sale": found["sale"]["total"] if found["sale"] else 0,
                       "for_rent": found["rent"]["total"] if found["rent"] else 0,
-                      "asked_location": next((r["asked_location"] for r in found.values() if r), None),
+                      "asked_location": asked,
+                      # Where these were counted, in words, so a count is never put on the wrong place.
+                      "where": asked or ("all of Trez's areas" + (" (the place they named is not one of ours)"
+                                                                  if plan.location_text else "")),
                       # What these counts match, so a count is never read as more or less than it is.
                       "counted": _counted(wanted)}
             # Listings, not just counts: when only one way has any (nothing to

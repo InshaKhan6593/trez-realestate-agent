@@ -101,13 +101,16 @@ Hard rules:
 
 Return JSON: {"reply": "...", "listing_ids_mentioned": [...], "says_available": [...],
 "unanswered": [...], "claims_no_listings": false, "promises_agent_contact": false,
-"promises_media": false, "says_no_photos": false, "photos_coming_said": null, "promises_visit": false}
+"promises_media": false, "says_no_photos": false, "photos_coming_said": null, "promises_visit": false,
+"features_said": []}
 using the listing_id numbers from FACTS. "listing_ids_mentioned" in the order the reply names
 them. Set "promises_agent_contact" true whenever the reply says our agent will contact them,
 call them, confirm or discuss something; "promises_media" true whenever it says photos or a
 video are coming; "says_no_photos" true whenever it says photos are not available;
 "photos_coming_said" = the number of photos the reply says are being sent now (null if none);
-"promises_visit" true whenever it says a visit or a time is possible, fixed or arranged."""
+"promises_visit" true whenever it says they can come to see it (on any day or time) or a visit is
+fixed or arranged; "features_said" = every feature or amenity the reply says a listing has, each
+copied exactly as written in that listing's FACTS (a feature FACTS do not write, you may not claim)."""
 
 
 class ReplyDraft(BaseModel):
@@ -122,7 +125,11 @@ class ReplyDraft(BaseModel):
     promises_media: bool = Field(False, description="the reply says photos/a video are coming")
     says_no_photos: bool = Field(False, description="the reply says photos are not available")
     photos_coming_said: int | None = Field(None, description="how many photos the reply says are being sent now")
-    promises_visit: bool = Field(False, description="the reply says a visit or a time is possible, fixed or arranged")
+    promises_visit: bool = Field(False, description="the reply says they can come to see it (any day or time), or "
+                                                    "that a visit is fixed or arranged")
+    features_said: list[str] = Field(default_factory=list,
+                                     description="each feature or amenity the reply says a listing HAS, copied exactly "
+                                                 "as FACTS write it")
 
 
 def _listing_fact(l: dict) -> dict:

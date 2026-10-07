@@ -48,3 +48,15 @@ def same_amount(said: int, actual: int) -> bool:
     """Equal as displayed: crore and lakh are shown to 2 decimals."""
     step = CRORE // 100 if actual >= CRORE else LAKH // 100 if actual >= LAKH else 1
     return abs(said - actual) <= step // 2 or said == actual
+
+
+_BARE = re.compile(
+    r"(?<![\d.,])(\d{1,3}(?:\.\d{1,2})?)(?![\d.,])"
+    r"(?!\s*(?:crores?|cr|karor|lakhs?|lacs?|laakh|thousand|hazaa?r|k)\b)",
+    re.IGNORECASE)
+
+
+def bare_numbers(text: str) -> list[float]:
+    """Numbers written without a unit ("8.5 pe de do"), small enough to be a price
+    in crore or lakh. The caller decides what they may mean."""
+    return [float(m.group(1)) for m in _BARE.finditer(text or "") if 0 < float(m.group(1)) < 1000]

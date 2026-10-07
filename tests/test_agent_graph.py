@@ -184,14 +184,14 @@ def test_search_with_nothing_in_the_sector_suggests_nearby_and_asks_one_thing(le
         "language": "roman_urdu",
         "intents": [{"type": "search"}],
         "slot_updates": [
-            {"slot": "purpose", "value": "sale", "source": "stated", "confidence": 1},
-            {"slot": "property_types", "value": ["flat"], "source": "stated", "confidence": 1},
-            {"slot": "location_id", "value": 12242, "source": "stated", "confidence": 1},
-            {"slot": "budget_max", "value": 50000000, "source": "stated", "confidence": 1},
+            {"slot": "purpose", "value": "sale", "said": "khareedna", "source": "stated", "confidence": 1},
+            {"slot": "property_types", "value": ["flat"], "said": "flat", "source": "stated", "confidence": 1},
+            {"slot": "location_id", "value": 12242, "said": "sector G", "source": "stated", "confidence": 1},
+            {"slot": "budget_max", "value": 50000000, "said": "5 crore tak", "source": "stated", "confidence": 1},
         ],
     })
     llm = ScriptedLLM([ext], [ReplyDraft(reply="Sector G mein abhi flat nahi, lekin qareeb options hain. Kitne bedrooms chahiye?")])
-    reply, turn_id = turn(lead, "Askari 5 sector G mein flat chahiye 5 crore tak", llm)
+    reply, turn_id = turn(lead, "Askari 5 sector G mein flat khareedna hai 5 crore tak", llm)
     facts_json = llm.prompts["responder"][0][1]["content"]
     assert '"nothing_in_asked_location": true' in facts_json and "Askari 5 - Sector" in facts_json
     plan = q("SELECT plan FROM turns WHERE id = %s", turn_id)[0][0]
@@ -220,7 +220,7 @@ def _three_available():
 
 
 SEARCH = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}], "slot_updates": [
-    {"slot": "purpose", "value": "sale", "source": "stated", "confidence": 1}]})
+    {"slot": "purpose", "value": "sale", "said": "khareedna", "source": "stated", "confidence": 1}]})
 
 
 def test_the_first_one_means_the_first_in_our_last_reply(lead):
@@ -330,8 +330,8 @@ def _ambiguous_place_name():
 
 def _place_search(word, **slots):
     return Extraction.model_validate({"language": "english", "intents": [{"type": "search"}],
-                                      "slot_updates": [{"slot": "purpose", "value": "sale", "source": "stated",
-                                                        "confidence": 1}] + [
+                                      "slot_updates": [{"slot": "purpose", "value": "sale", "said": "khareedna",
+                                                        "source": "stated", "confidence": 1}] + [
                                           {"slot": k, "value": v, "said": word, "source": "stated", "confidence": 1}
                                           for k, v in slots.items()]})
 
@@ -359,7 +359,7 @@ def test_a_name_that_fits_several_places_is_asked_not_searched_everywhere(lead, 
     word, options = found
     slot = {"location_text": word} if model_reads == "as text" else {"location_id": next(iter(options))}
     llm = ScriptedLLM([_place_search(word, **slot)], [ReplyDraft(reply="Which one do you mean?")])
-    reply, turn_id = turn(lead, f"I want to buy in {word}", llm)
+    reply, turn_id = turn(lead, f"{word} mein khareedna hai", llm)
     plan, tools = q("SELECT plan, tool_calls FROM turns WHERE id = %s", turn_id)[0]
     assert plan["ask"] == "which_place" and plan["search"] is None
     assert [t["tool"] for t in tools] in (["find_location"], ["check_place"])
@@ -385,7 +385,7 @@ def test_buy_or_rent_unknown_but_only_one_exists_shows_the_listings(lead):
         pytest.skip("every property type in today's stock is listed both for sale and for rent")
     kind, purpose = found
     ext = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}], "slot_updates": [
-        {"slot": "property_types", "value": [kind], "source": "stated", "confidence": 1}]})
+        {"slot": "property_types", "value": [kind], "said": kind, "source": "stated", "confidence": 1}]})
     llm = ScriptedLLM([ext], [ReplyDraft(reply="Ye options hain. Buy karna hai ya rent?")])
     turn(lead, f"{kind} chahiye", llm)
     facts = json.loads(llm.prompts["responder"][0][1]["content"])["FACTS"]
@@ -401,7 +401,7 @@ def test_asked_again_without_saying_buy_or_rent_shows_both_ways(lead):
         pytest.skip("no property type is listed both for sale and for rent today")
     kind = both[0][0]
     ext = lambda intent: Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": intent}],  # noqa: E731
-                                                    "slot_updates": [{"slot": "property_types", "value": [kind],
+                                                    "slot_updates": [{"slot": "property_types", "value": [kind], "said": kind,
                                                                       "source": "stated", "confidence": 1}]})
     llm = ScriptedLLM([ext("search"), ext("more_options")],
                       [ReplyDraft(reply="Buy karna hai ya rent?"), ReplyDraft(reply="Ye options hain.")])
@@ -450,7 +450,7 @@ def test_a_place_the_buyer_named_is_used_when_the_model_leaves_it_out(lead):
                 WHERE l.status = 'available' GROUP BY p.id, p.name ORDER BY count(*) DESC LIMIT 1""")
     place_id, name = rows[0]
     ext = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}]})   # no place
-    llm = ScriptedLLM([ext], [ReplyDraft(reply="Buy karna hai ya rent?")])
+    llm = ScriptedLLM([ext, ext], [ReplyDraft(reply="Buy karna hai ya rent?")])   # 2nd: the second look
     _, turn_id = turn(lead, f"{name} ka rate?", llm)
     plan, tools = q("SELECT plan, tool_calls FROM turns WHERE id = %s", turn_id)[0]
     assert tools[0]["tool"] == "place_in_message" and tools[0]["result"]["place_id"] == place_id
@@ -472,9 +472,46 @@ def test_a_place_that_does_not_resemble_the_buyers_words_is_not_taken(lead):
     assert "location_id" not in slots and slots["location_text"] == "Qwertabad"
 
 
+def test_a_value_the_buyer_did_not_say_is_not_stored(lead):
+    # Live run: "jo hai woh dikha dein" came back with purpose "sale", which they never said.
+    ext = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "more_options"}], "slot_updates": [
+        {"slot": "purpose", "value": "sale", "said": "khareedna hai", "source": "stated", "confidence": 1}]})
+    llm = ScriptedLLM([ext], [ReplyDraft(reply="Buy karna hai ya rent?")])
+    _, turn_id = turn(lead, "acha phir jo hai woh dikha dein", llm)
+    assert q("SELECT slot FROM lead_slots WHERE lead_id = %s", lead) == []
+    plan = q("SELECT plan FROM turns WHERE id = %s", turn_id)[0][0]
+    assert plan["search"] is None                                             # buy or rent still unknown
+
+
+def test_a_search_with_no_details_gets_a_second_look(lead):
+    # Live run: "10 marla ka ghar chahiye Bahria Town mein, 5 crore tak" came back with nothing.
+    empty = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}]})
+    full = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}], "slot_updates": [
+        {"slot": "budget_max", "value": 50000000, "said": "5 crore tak", "source": "stated", "confidence": 1}]})
+    llm = ScriptedLLM([empty, full], [ReplyDraft(reply="Buy karna hai ya rent?")])
+    turn(lead, "ghar chahiye 5 crore tak", llm)
+    assert len(llm.prompts["extractor"]) == 2
+    assert "came back empty" in llm.prompts["extractor"][1][-1]["content"]
+    assert q("SELECT value FROM lead_slots WHERE lead_id = %s AND slot = 'budget_max'", lead) == [(50000000,)]
+
+
+def test_the_place_named_exactly_is_searched_not_a_part_of_it(lead):
+    # Live run: "Askari 5" searched only Sector F / Sector G, which the model had picked.
+    rows = q("""SELECT parent.id, parent.name, child.id FROM locations parent
+                JOIN locations child ON child.parent_id = parent.id
+                JOIN listings l ON l.location_id = child.id WHERE l.status = 'available' LIMIT 1""")
+    if not rows:
+        pytest.skip("no place with listed sub-places today")
+    parent_id, parent_name, child_id = rows[0]
+    llm = ScriptedLLM([_place_search(parent_name, location_id=child_id)], [ReplyDraft(reply="Ye options hain.")])
+    _, turn_id = turn(lead, f"{parent_name} mein khareedna hai", llm)
+    plan, tools = q("SELECT plan, tool_calls FROM turns WHERE id = %s", turn_id)[0]
+    assert tools[0]["result"]["verdict"] == "use_named" and plan["search"]["location_id"] == parent_id
+
+
 def test_asking_again_leaves_one_open_question(lead):
     greet = Extraction.model_validate({"language": "roman_urdu", "intents": [{"type": "search"}]})
-    llm = ScriptedLLM([greet, greet], [ReplyDraft(reply="Buy karna hai ya rent?"),
+    llm = ScriptedLLM([greet, greet, greet, greet], [ReplyDraft(reply="Buy karna hai ya rent?"),
                                        ReplyDraft(reply="Buy ya rent?")])
     turn(lead, "ghar chahiye", llm)
     turn(lead, "house dikhayein", llm)
@@ -486,12 +523,12 @@ def test_a_place_we_do_not_know_may_be_called_empty(lead):
     ext = Extraction.model_validate({
         "language": "roman_urdu", "intents": [{"type": "search"}],
         "slot_updates": [
-            {"slot": "purpose", "value": "sale", "source": "stated", "confidence": 1},
-            {"slot": "location_text", "value": "Bahria Town", "source": "stated", "confidence": 1},
-            {"slot": "property_types", "value": ["house"], "source": "stated", "confidence": 1},
+            {"slot": "purpose", "value": "sale", "said": "khareedna", "source": "stated", "confidence": 1},
+            {"slot": "location_text", "value": "Bahria Town", "said": "Bahria Town", "source": "stated", "confidence": 1},
+            {"slot": "property_types", "value": ["house"], "said": "house", "source": "stated", "confidence": 1},
         ],
     })
     llm = ScriptedLLM([ext], [ReplyDraft(reply="Bahria Town mein abhi hamari listings nahi hain.",
                                          claims_no_listings=True)])
-    _, turn_id = turn(lead, "Bahria Town mein house?", llm)
+    _, turn_id = turn(lead, "Bahria Town mein house khareedna hai?", llm)
     assert q("SELECT validation->>'attempts' FROM turns WHERE id = %s", turn_id) == [("1",)]

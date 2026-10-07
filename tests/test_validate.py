@@ -98,6 +98,41 @@ def test_a_visit_is_never_arranged_by_the_bot():
         "the reply arranges or confirms a visit; only our agent arranges visits, say they will"]
 
 
+def test_a_feature_is_claimed_only_if_the_listing_says_it():
+    # Live run: "parking bhi hai" for a house whose listing says nothing about parking.
+    house = {**listing(42, 79_500_000), "amenities": [{"label": "Lawn or Garden", "value": True}]}
+    facts = Facts(listings={42: house})
+    made_up = ReplyDraft(reply="Parking bhi hai.", features_said=["parking"])
+    assert check(made_up, Plan(), facts, set()) == [
+        "the reply says a listing has ['parking'], which its facts do not say; claim only features written in FACTS"]
+    real = ReplyDraft(reply="Lawn bhi hai.", features_said=["Lawn or Garden"])
+    assert check(real, Plan(), facts, set()) == []
+
+
+def test_a_search_that_found_nothing_is_said_plainly():
+    # Live run: "Yeh list kar raha hoon" when the search had found nothing.
+    facts = Facts(search={"stage": "none", "total": 0, "results": []})
+    draft = ReplyDraft(reply="Yeh options dekh lein.")
+    assert check(draft, Plan(), facts, set()) == [
+        "the search found nothing that matches; say so plainly (and set claims_no_listings)"]
+    honest = ReplyDraft(reply="Is budget mein abhi kuch nahi mila.", claims_no_listings=True)
+    assert check(honest, Plan(), facts, set()) == []
+
+
+def test_the_agent_may_be_mentioned_while_their_handoff_is_open():
+    # Live run: "theek hai shukriya" after a visit request: the agent mention was rejected.
+    draft = ReplyDraft(reply="Shukriya! Hamare agent jald rabta karenge.", promises_agent_contact=True)
+    assert check(draft, Plan(), Facts(), set()) != []
+    assert check(draft, Plan(), Facts(), set(), handoff_open=True) == []
+
+
+def test_numbers_written_without_a_unit():
+    from agent.money import bare_numbers
+    assert bare_numbers("doosra wala 8.5 pe de do") == [8.5]
+    assert bare_numbers("8 crore final karein, 7.9 lakh") == []              # units: amounts_in reads those
+    assert bare_numbers("call 03001234567") == []
+
+
 # --- what the models are told about a message ----------------------------------
 
 def test_messages_we_cannot_take_in_are_described_as_such():

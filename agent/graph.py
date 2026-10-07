@@ -21,13 +21,13 @@ from psycopg.rows import dict_row
 
 from . import handoff as handoffs
 from . import trace
-from .context import TurnContext, has_urdu_script, load_context, unheard
+from .context import TurnContext, has_urdu_script, load_context, said_in, unheard
 from .extract import build_prompt as extract_prompt
 from .extract import extract
 from .llm import LLM, Usage
 from .locations import load_tree, place_choices
 from .memory import remember
-from .money import amounts_in, pkr
+from .money import CRORE, LAKH, amounts_in, bare_numbers, pkr
 from .planner import Plan, add_unanswered, after_tools, apply_scores, plan
 from .respond import ReplyDraft, respond
 from .respond import build_prompt as respond_prompt
@@ -64,6 +64,7 @@ class TurnState(TypedDict, total=False):
     places: list[dict]
     discussed: list[dict]
     last_list: list[dict]
+    unsaid: list[dict]
     ext: Extraction
     plan: Plan
     facts: Facts
@@ -155,12 +156,38 @@ async def n_extract(state: TurnState, config) -> TurnState:
         ext.language = "urdu"
     elif not words and ctx.language:
         ext.language = ctx.language
-    return {"ext": ext}
+    texts = [m["text"] for m in ctx.burst if m.get("text")]
+    kept, unsaid = _with_evidence(ext, texts)
+    if not kept and "search" in {i.type for i in ext.intents} and texts:
+        # It says they are searching but reports no detail at all (live run: a message with a
+        # place, size, type and budget came back empty): one second look, then the same check.
+        retry = [*messages, {"role": "user", "content":
+                 "Your `wants` came back empty although you marked a search. Read BUYER_MESSAGES_NOW "
+                 "again and fill every field these messages state; leave a field null only if it is not said."}]
+        again = await extract(llm, state["usage"], retry)
+        again.language = ext.language
+        ext = again
+        kept, unsaid = _with_evidence(ext, texts)
+    ext.slot_updates = kept
+    return {"ext": ext, "unsaid": unsaid}
+
+
+def _with_evidence(ext: Extraction, texts: list[str]) -> tuple[list, list[dict]]:
+    """Keep the values whose quoted words are in the buyer's messages; the rest were not
+    said now (live run: "sale" invented from "jo hai woh dikha dein")."""
+    kept, unsaid = [], []
+    for u in ext.slot_updates:
+        if said_in(u.said, texts):
+            kept.append(u)
+        else:
+            unsaid.append({"slot": u.slot, "value": u.value, "said": u.said, "why": "not in their message"})
+    return kept, unsaid
 
 
 async def n_plan(state: TurnState, config) -> TurnState:
     with trace.step("plan-turn", as_type="chain", input=state["ext"].model_dump(exclude_defaults=True)) as obs:
         p = plan(state["ctx"].state, state["ext"])
+        p.ignored_slots += state.get("unsaid", [])
         # A voice note or picture we cannot take in goes to a person, who can.
         kinds = unheard(state["ctx"].burst)
         if kinds:
@@ -202,12 +229,18 @@ async def n_check(state: TurnState, config) -> TurnState:
     slots = {**state["ctx"].state.slots, **state["plan"].slot_updates}
     buyer_amounts = {int(v["value"]) for k, v in slots.items()
                      if k in ("budget_min", "budget_max") and str(v.get("value", "")).isdigit()}
-    # The buyer's own words may be repeated back ("aap ka 8 crore ka offer").
-    buyer_amounts |= {a for m in state["ctx"].burst for a in amounts_in(m.get("text") or "")}
+    # The buyer's own amounts may be repeated back (their offer), with or without a
+    # unit: a bare number in a property chat is crore or lakh (live run: "8.5 pe de do").
+    texts = [m.get("text") or "" for m in state["ctx"].burst]
+    buyer_amounts |= {a for t in texts for a in amounts_in(t)}
+    offering = set((state["plan"].handoff or {}).get("reasons", [])) & {"negotiation", "ready_to_pay"}
+    if offering:   # only when they are making an offer: elsewhere "Askari 5" or "3 bed" are not prices
+        buyer_amounts |= {round(n * unit) for t in texts for n in bare_numbers(t) for unit in (CRORE, LAKH)}
     draft = state["draft"]
     with trace.step("check-reply", as_type="guardrail", input=draft.model_dump(),
                     metadata={"attempt": state["attempts"]}) as obs:
-        problems = check(draft, state["plan"], state["facts"], buyer_amounts, state.get("prompt_words", set()))
+        problems = check(draft, state["plan"], state["facts"], buyer_amounts, state.get("prompt_words", set()),
+                         handoff_open=state["ctx"].state.handoff_state != "none")
         obs.update(output={"passed": not problems, "problems": problems},
                    level="WARNING" if problems else None,
                    status_message="; ".join(problems)[:500] if problems else None)
