@@ -21,7 +21,7 @@ from fastapi.responses import PlainTextResponse
 from psycopg_pool import AsyncConnectionPool
 
 from . import inbox, store
-from .config import get_settings
+from .config import DB_CONNECT, get_settings
 from .errors import init_sentry
 from .meta import parse_webhook, signature_ok
 
@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     app.state.settings = settings
     app.state.db = AsyncConnectionPool(
-        settings.database_url, kwargs={"autocommit": True}, min_size=1, max_size=5, open=False
+        settings.database_url, kwargs=DB_CONNECT, min_size=1, max_size=5, open=False
     )
     await app.state.db.open()
     app.state.redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))

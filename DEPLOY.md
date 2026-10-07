@@ -37,9 +37,13 @@ Secrets never go in the repo (it is public): Railway variables, GitHub Actions s
    npx supabase db push
    ```
 3. Note three values (Project Settings / the **Connect** button):
-   - `DATABASE_URL`: **Session pooler** connection string (IPv4; the direct connection is
-     IPv6-only and Railway and GitHub cannot reach it). Looks like
-     `postgresql://postgres.<ref>:<password>@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres`
+   - `DATABASE_URL`: a **pooler** connection string (IPv4; the direct connection is IPv6-only and
+     Railway and GitHub cannot reach it):
+     - for **Railway** (webhook, worker): the **transaction pooler**, port **6543**. The session
+       pooler allows only 15 clients, and a redeploy (old and new copies side by side) used them up
+       on 2026-10-07. The app turns prepared statements off, which this pooler needs.
+       `postgresql://postgres.<ref>:<password>@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres`
+     - for the **GitHub Actions** sync (one long job): the **session pooler**, port **5432**.
    - `SUPABASE_URL`: `https://<project-ref>.supabase.co`
    - `SUPABASE_SERVICE_ROLE_KEY`: API keys → `service_role` (secret: server use only)
 

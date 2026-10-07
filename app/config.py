@@ -36,6 +36,14 @@ class Settings:
         return not (self.whatsapp_access_token and self.whatsapp_phone_number_id)
 
 
+# How the app's connection pools connect. Prepared statements off: production goes
+# through Supabase's transaction pooler (port 6543), which shares a few real
+# connections between many clients and cannot keep prepared statements. (The
+# session pooler allows only 15 clients: a redeploy, old and new side by side,
+# ran out of them on 2026-10-07.) Harmless on a direct or local connection.
+DB_CONNECT = {"autocommit": True, "prepare_threshold": None}
+
+
 @lru_cache
 def get_settings() -> Settings:
     load_dotenv()

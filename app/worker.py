@@ -16,7 +16,7 @@ from agent import trace
 from agent.llm import LLM, model_for
 from agent.media import send_listing_media
 
-from .config import get_settings
+from .config import DB_CONNECT, get_settings
 from .errors import init_sentry
 from .reply import make_reply_fn
 from .sender import send_text
@@ -46,7 +46,7 @@ async def startup(ctx: dict) -> None:
         model_for(role)
     ctx["reply_fn"] = make_reply_fn(LLM())
     ctx["db"] = AsyncConnectionPool(
-        settings.database_url, kwargs={"autocommit": True}, min_size=1, max_size=5, open=False
+        settings.database_url, kwargs=DB_CONNECT, min_size=1, max_size=5, open=False
     )
     await ctx["db"].open()
 
