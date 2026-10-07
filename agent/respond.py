@@ -113,8 +113,8 @@ video are coming; "says_no_photos" true whenever it says photos are not availabl
 "photos_coming_said" = the number of photos the reply says are being sent now (null if none);
 "judges_price" true whenever it accepts, refuses or judges their offer or says whether the price can
 change; "promises_visit" true whenever it says they can come to see it (on any day or time) or a visit is
-fixed or arranged; "features_said" = every feature or amenity the reply says a listing has, each
-copied exactly as written in that listing's FACTS (a feature FACTS do not write, you may not claim)."""
+fixed or arranged; "features_said" = every amenity or feature the reply says a listing has (not its rooms, size, price
+or area), each copied exactly as written in that listing's FACTS (one FACTS do not write, you may not claim)."""
 
 
 class ReplyDraft(BaseModel):
@@ -134,8 +134,8 @@ class ReplyDraft(BaseModel):
     judges_price: bool = Field(False, description="the reply accepts, refuses or judges the buyer's offer, or says "
                                                   "whether the price can or cannot change")
     features_said: list[str] = Field(default_factory=list,
-                                     description="each feature or amenity the reply says a listing HAS, copied exactly "
-                                                 "as FACTS write it")
+                                     description="each amenity or feature the reply says a listing HAS, copied "
+                                                 "exactly as FACTS write it; not its rooms, size, price or area")
 
 
 def _listing_fact(l: dict) -> dict:

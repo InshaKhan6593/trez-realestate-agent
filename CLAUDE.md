@@ -16,8 +16,7 @@ and hands leads to the human agent with full context. Their inventory is measure
   Graph state lives for one turn; the buyer's memory is in Postgres, never a checkpointer.
 - LLMs via **OpenRouter** (OpenAI-compatible API), not a provider SDK. Models and options come from
   `.env` (`EXTRACTOR_MODEL`, `RESPONDER_MODEL`, `*_REASONING`, `*_TEMPERATURE`, `EXTRACTOR_READINGS`); the user picks them.
-  Currently extractor `openai/gpt-6-luna`, responder `deepseek/deepseek-v4-flash-vision-exp`, reasoning off
-  (2026-10-07 comparison: ARCHITECTURE.md §0). Never hard-code a model.
+  Currently `openai/gpt-6-luna` for both, reasoning off (2026-10-07 comparison: ARCHITECTURE.md §0). Never hard-code a model.
 - Code decides tools, questions, scoring, staleness and handoff; the LLM only extracts and words the reply.
 - Listing facts come only from tools/DB, never from chat history. Stale (unverified) means unknown, not available.
 - **Langfuse** tracing (built): one trace per turn, one session per buyer, phone numbers masked;
