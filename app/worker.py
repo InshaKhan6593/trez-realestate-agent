@@ -12,6 +12,7 @@ from arq import Retry, func
 from arq.connections import RedisSettings
 from psycopg_pool import AsyncConnectionPool
 
+from agent import trace
 from agent.llm import LLM, model_for
 from agent.media import send_listing_media
 
@@ -50,6 +51,7 @@ async def startup(ctx: dict) -> None:
 
 async def shutdown(ctx: dict) -> None:
     await ctx["db"].close()
+    trace.flush()        # send the last traces before the process exits
 
 
 class WorkerSettings:

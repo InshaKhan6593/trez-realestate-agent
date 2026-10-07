@@ -19,7 +19,9 @@ from tests.meta_payloads import APP_SECRET, signed, status_update, text_message
 DB_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")
 REDIS_URL = "redis://127.0.0.1:6379/15"
 VERIFY_TOKEN = "test-verify-token"
-TEST_PREFIX = "9299"          # no real Pakistani number starts like this
+# No real Pakistani number starts with 9299. This test's own block of it, so its
+# cleanup never deletes scripts/chat.py's test buyers (92995555...).
+TEST_PREFIX = "929977"
 
 
 def _reachable() -> bool:
@@ -68,7 +70,7 @@ def client():
 
 
 def _phone() -> str:
-    return TEST_PREFIX + "".join(random.choices("0123456789", k=8))
+    return TEST_PREFIX + "".join(random.choices("0123456789", k=6))
 
 
 def _post(client, payload: dict):

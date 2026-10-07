@@ -20,7 +20,11 @@ import httpx
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
+from . import trace
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Langfuse names: stable, so filters and dashboards keep matching.
+GENERATION_NAMES = {"extractor": "extract-request", "responder": "write-reply"}
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -92,12 +96,38 @@ class LLM:
             raise LLMError(f"OpenRouter returned no choices: {str(body)[:400]}")
         return body
 
+    async def _traced(self, name: str, role: str, model: str, messages: list[dict], opts: dict,
+                      **extra) -> dict:
+        """One model call, recorded as a Langfuse generation: the exact prompt,
+        the answer (parsed JSON when it is JSON), any reasoning, tokens, cost."""
+        params = {"role": role, "response_format": extra["response_format"]["type"] if extra else "prompt",
+                  **{k: (v if isinstance(v, int | float | str) else json.dumps(v)) for k, v in opts.items()}}
+        with trace.step(name, as_type="generation", model=model, input=messages,
+                        model_parameters=params) as gen:
+            try:
+                body = await self._chat(model, messages, **opts, **extra)
+            except LLMError as err:
+                gen.update(level="ERROR", status_message=str(err)[:500])
+                raise
+            message = body["choices"][0]["message"]
+            u = body.get("usage") or {}
+            usage_details = {"input": u.get("prompt_tokens") or 0, "output": u.get("completion_tokens") or 0}
+            reasoning_tokens = (u.get("completion_tokens_details") or {}).get("reasoning_tokens")
+            if reasoning_tokens:
+                usage_details["output_reasoning"] = reasoning_tokens
+            gen.update(model=body.get("model", model), output=_readable(message.get("content")),
+                       usage_details=usage_details,
+                       cost_details={"total": float(u["cost"])} if u.get("cost") is not None else None,
+                       metadata={"reasoning": message["reasoning"]} if message.get("reasoning") else None)
+        return body
+
     async def structured(self, role: str, messages: list[dict], schema: type[T], usage: Usage) -> T:
         model = model_for(role)
         opts = options_for(role)
+        name = GENERATION_NAMES.get(role, role)
         json_schema = schema.model_json_schema()
         try:
-            body = await self._chat(model, messages, **opts, response_format={
+            body = await self._traced(name, role, model, messages, opts, response_format={
                 "type": "json_schema",
                 "json_schema": {"name": schema.__name__, "strict": False, "schema": json_schema},
             })
@@ -107,7 +137,7 @@ class LLM:
             # The model does not do schema output: put the schema in the prompt.
             messages = [*messages, {"role": "system", "content":
                         "Answer with JSON only, matching this JSON schema:\n" + json.dumps(json_schema)}]
-            body = await self._chat(model, messages, **opts)
+            body = await self._traced(name, role, model, messages, opts)
         usage.add(role, model, body)
         raw = body["choices"][0]["message"].get("content") or ""
         try:
@@ -115,13 +145,21 @@ class LLM:
         except ValidationError as err:
             repair = [*messages, {"role": "assistant", "content": raw},
                       {"role": "user", "content": f"That JSON is invalid: {err}. Reply with corrected JSON only."}]
-            body = await self._chat(model, repair, **opts)
+            body = await self._traced("repair-json", role, model, repair, opts)
             usage.add(role + "_repair", model, body)
             raw = body["choices"][0]["message"].get("content") or ""
             try:
                 return schema.model_validate_json(_strip_fences(raw))
             except ValidationError as err2:
                 raise LLMError(f"{role} returned invalid JSON twice: {err2}") from err2
+
+
+def _readable(content: str | None):
+    """The answer as JSON when it is JSON (Langfuse shows it as a tree)."""
+    try:
+        return json.loads(_strip_fences(content or ""))
+    except ValueError:
+        return content
 
 
 def _strip_fences(text: str) -> str:

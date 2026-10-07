@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 IntentType = Literal[
     "greeting",            # salam, hi
@@ -43,9 +43,12 @@ Slot = Literal[
 
 
 class ListingRef(BaseModel):
-    zameen_id: int | None = Field(None, description="Only if a Zameen number or link is in the message")
+    zameen_id: int | None = Field(
+        None, description="The Zameen number in a link or listing number in the message; otherwise the "
+                          "zameen_id of the listing they mean from OUR_LAST_LIST / LISTINGS_DISCUSSED, "
+                          "when you can tell which one it is")
     from_history: str | None = Field(
-        None, description="How they refer to one we discussed: 'the DHA one', 'the first one', 'the cheaper one'")
+        None, description="Only when you cannot tell which listing they mean: how they referred to it")
 
 
 class Intent(BaseModel):
@@ -56,17 +59,27 @@ class Intent(BaseModel):
 
 
 class SlotUpdate(BaseModel):
+    # `said` is required for the model (the schema lists it), optional in code.
+    model_config = ConfigDict(json_schema_extra=lambda s: s.setdefault("required", []).append("said"))
+
     slot: Slot
     value: str | int | float | list[str] | None
+    said: str | None = Field(None, description="Their own words this value comes from, copied exactly "
+                                               "('askari 5', 'emaar', '4 cr tak')")
     source: Literal["stated", "inferred"] = Field(description="stated: they said it; inferred: implied")
     confidence: float = Field(ge=0, le=1)
 
 
 class Extraction(BaseModel):
+    # Signals come before intents, and are required, so the model decides them first:
+    # written last, they were dropped (a token offer was caught 1 time in 10 after a long chat).
+    model_config = ConfigDict(json_schema_extra=lambda s: s.setdefault("required", []).append("signals"))
+
     language: Literal["roman_urdu", "urdu", "english", "mixed"]
+    signals: list[Literal["visit_request", "token_or_bayana", "cash_ready", "urgent",
+                          "dealer", "frustrated", "repeat_question"]] = Field(
+        default_factory=list, description="Buying signals in THESE messages; [] if none")
     intents: list[Intent]
     slot_updates: list[SlotUpdate] = Field(default_factory=list)
-    signals: list[Literal["visit_request", "token_or_bayana", "cash_ready", "urgent",
-                          "dealer", "frustrated", "repeat_question"]] = Field(default_factory=list)
     rejected: list[ListingRef] = Field(default_factory=list, description="Listings they said no to")
     rejected_reason: str | None = None

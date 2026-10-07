@@ -6,7 +6,7 @@ from __future__ import annotations
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
-from .planner import Plan
+from .planner import ASK_FILLS, QUESTION_ORDER, Plan
 from .runner import Facts
 from .schemas import Extraction
 
@@ -32,13 +32,18 @@ async def remember(conn: AsyncConnection, lead_id: int, turn_id: int, *, ext: Ex
             """UPDATE open_questions SET status = 'answered'
                WHERE lead_id = %s AND status = 'open' AND slot = ANY(%s)""",
             (lead_id, list(plan.slot_updates)))
-        if asked and plan.ask:
+        slot = ASK_FILLS.get(plan.ask, plan.ask)
+        if asked and slot in QUESTION_ORDER:          # "which listing?" is not a fact about the buyer
+            # Asked again: the earlier ask stays counted but is no longer the open one.
+            await conn.execute(
+                "UPDATE open_questions SET status = 'dropped' WHERE lead_id = %s AND slot = %s AND status = 'open'",
+                (lead_id, slot))
             await conn.execute("INSERT INTO open_questions (lead_id, slot, turn_id) VALUES (%s, %s, %s)",
-                               (lead_id, plan.ask, turn_id))
+                               (lead_id, slot, turn_id))
 
         # What we told them about each listing, so a later change is reported, not repeated.
         details = facts.listings
-        shown = {r["listing_id"]: r for r in (facts.search or {}).get("results", [])}
+        shown = {r["listing_id"]: r for r in [*(facts.search or {}).get("results", []), *facts.candidates]}
         for listing_id in set(details) | (set(shown) & set(mentioned)):
             l = details.get(listing_id) or shown[listing_id]
             relation = "inquired" if listing_id in details else "shown"
@@ -66,12 +71,14 @@ async def remember(conn: AsyncConnection, lead_id: int, turn_id: int, *, ext: Ex
         await conn.execute(
             """UPDATE turns SET extracted = %s, plan = %s, tool_calls = %s, validation = %s, usage = %s
                WHERE id = %s""",
-            (Jsonb(ext.model_dump()), Jsonb(_plan_record(plan)), Jsonb(facts.tool_calls),
+            (Jsonb(ext.model_dump()), Jsonb(_plan_record(plan, mentioned)), Jsonb(facts.tool_calls),
              Jsonb(validation), Jsonb(usage), turn_id))
 
 
-def _plan_record(plan: Plan) -> dict:
+def _plan_record(plan: Plan, mentioned: list[int]) -> dict:
     return {"ask": plan.ask, "must": plan.must, "handoff": plan.handoff, "search": plan.search,
             "listing_refs": plan.listing_refs, "want_photos": plan.want_photos,
             "want_video": plan.want_video, "scores": plan.scores, "returning": plan.returning,
-            "slot_updates": plan.slot_updates}
+            "slot_updates": plan.slot_updates,
+            # In the order the reply named them: "pehla wala" next turn means the first.
+            "listings_mentioned": mentioned}

@@ -21,8 +21,10 @@ import time
 import psycopg
 from dotenv import load_dotenv
 
+from agent import trace
 from agent.graph import agent_reply
 from agent.llm import LLM
+from app.turn import score_reply
 
 TEST_PREFIX = "9299"
 
@@ -48,11 +50,19 @@ async def one_turn(conn, llm: LLM, phone: str, text: str) -> None:
     await conn.execute("UPDATE messages SET turn_id = %s WHERE id = %s", (turn_id, mid))
 
     started = time.monotonic()
-    reply = await agent_reply(conn, llm, lead_id, turn_id, [mid])
-    await conn.execute(
-        """INSERT INTO messages (lead_id, direction, type, text, delivery_status, turn_id, at)
-           VALUES (%s, 'out', 'text', %s, 'not_sent', %s, now())""", (lead_id, reply.text, turn_id))
-    await reply.commit(conn)
+    # Traced like a WhatsApp turn (tagged local-chat), when Langfuse keys are set.
+    with trace.turn(lead_id, turn_id, [{"type": "text", "text": text}], tags=["local-chat"]) as root:
+        tid = trace.trace_id()
+        if tid:
+            await conn.execute("UPDATE turns SET langfuse_trace_id = %s WHERE id = %s", (tid, turn_id))
+        reply = await agent_reply(conn, llm, lead_id, turn_id, [mid])
+        await conn.execute(
+            """INSERT INTO messages (lead_id, direction, type, text, delivery_status, turn_id, at)
+               VALUES (%s, 'out', 'text', %s, 'not_sent', %s, now())""", (lead_id, reply.text, turn_id))
+        await reply.commit(conn)
+        root.update(output=reply.text)
+        score_reply(reply.audit)
+        trace_url = trace.url()
     seconds = time.monotonic() - started
     await conn.execute("UPDATE turns SET status = 'not_sent', reply = %s, latency_ms = %s, finished_at = now() "
                        "WHERE id = %s", (reply.text, int(seconds * 1000), turn_id))
@@ -76,6 +86,8 @@ async def one_turn(conn, llm: LLM, phone: str, text: str) -> None:
     if reply.alert:
         print("   ⚠ agent alert:\n      " + reply.alert["text"].replace("\n", "\n      "))
     print(f"   {seconds:.1f}s, ${cost:.5f}, {len(usage)} model calls")
+    if trace_url:
+        print(f"   trace:      {trace_url}")
 
 
 async def main() -> int:
@@ -106,4 +118,7 @@ async def main() -> int:
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    sys.exit(asyncio.run(main(), loop_factory=asyncio.SelectorEventLoop))
+    try:
+        sys.exit(asyncio.run(main(), loop_factory=asyncio.SelectorEventLoop))
+    finally:
+        trace.flush()        # send the traces before exiting

@@ -11,7 +11,8 @@ Rules (ARCHITECTURE.md §7, §9 and the Phase 1 scope):
 - Negotiation, legal/documents, a request for a person, a seller, a visit
   request, frustration -> handoff. The bot keeps serving facts until the
   agent takes over; it never negotiates or promises.
-- Scores are computed here from facts; the model only reports signals.
+- Scores are computed here from facts; the model only reports signals. A buyer
+  ready to pay a token is hot, and stays hot (remembered as `ready_to_pay`).
 """
 
 from __future__ import annotations
@@ -30,6 +31,22 @@ HANDOFF_INTENTS = {"negotiation": "negotiation", "ask_human": "asked_for_human",
                    "legal_or_documents": "legal_or_documents", "seller": "seller"}
 HANDOFF_SIGNALS = {"visit_request": "visit_request", "token_or_bayana": "ready_to_pay",
                    "frustrated": "frustrated"}
+# The reason the agent reads first: money on the table, then the deal, then the rest.
+HANDOFF_ORDER = ["ready_to_pay", "negotiation", "visit_request", "legal_or_documents", "seller",
+                 "frustrated", "asked_for_human", "hot_lead", "not_in_data"]
+# A clarifying question whose answer fills a slot: stored as that slot's open
+# question, so the buyer's short answer ("Emaar Panorama") is read as the answer.
+ASK_FILLS = {"which_place": "location_id"}
+# Slots with fixed choices: anything else the model returns is not stored.
+SLOT_CHOICES = {
+    "purpose": {"sale", "rent"},
+    "timeline": {"under_1_month", "1_3_months", "3_6_months", "browsing"},
+    "payment_mode": {"cash", "installments", "bank_loan", "selling_first"},
+    "decision_maker": {"self", "with_family", "for_someone_else"},
+    "use": {"live", "invest"},
+}
+# Questions about the deal or its papers are about the listing being discussed.
+LISTING_INTENTS = {"listing_question", "availability", "photos", "video", "negotiation", "legal_or_documents"}
 
 
 @dataclass
@@ -58,6 +75,7 @@ class LeadState:
 @dataclass
 class Plan:
     slot_updates: dict[str, dict] = field(default_factory=dict)
+    ignored_slots: list[dict] = field(default_factory=list)    # values outside a slot's choices, not stored
     clear_slots: list[str] = field(default_factory=list)       # e.g. an old place, replaced
     listing_refs: list[dict] = field(default_factory=list)    # {"zameen_id"} or {"history": text} or {"current": True}
     want_photos: bool = False
@@ -65,6 +83,7 @@ class Plan:
     search: dict | None = None                               # Criteria fields, from slots
     preview: dict | None = None                              # buy/rent unknown: count stock both ways
     location_text: str | None = None                         # to resolve with find_location
+    place_words: str | None = None                           # their words, to check the model's place pick
     ask: str | None = None
     must: list[dict] = field(default_factory=list)           # things the reply has to say
     handoff: dict | None = None                              # {"reason", "open_items"}
@@ -82,12 +101,17 @@ def _known(slots: dict, name: str) -> bool:
     return s.get("source") == "stated" if name == "purpose" else True
 
 
-def merge_slots(current: dict, ext: Extraction) -> dict:
+def merge_slots(current: dict, ext: Extraction, ignored: list[dict] | None = None) -> dict:
     """-> the updates to store. A stated value replaces an inferred one; an
-    inferred guess never overwrites something the buyer said."""
+    inferred guess never overwrites something the buyer said. A value outside
+    a slot's fixed choices is not stored; it goes to `ignored` (shown in the trace)."""
     updates: dict[str, dict] = {}
     for u in ext.slot_updates:
         if u.value in (None, "", []):
+            continue
+        if u.slot in SLOT_CHOICES and str(u.value) not in SLOT_CHOICES[u.slot]:
+            if ignored is not None:
+                ignored.append({"slot": u.slot, "value": u.value})
             continue
         before = current.get(u.slot)
         if before and before.get("source") == "stated" and u.source == "inferred":
@@ -109,13 +133,15 @@ def score(slots: dict, ext: Extraction, stock_matches: int | None) -> dict:
     intent += {"cash": 15, "installments": 8, "bank_loan": 8}.get(str((slots.get("payment_mode") or {}).get("value")), 0)
     intent += 10 if known("use") else 0
     intent += 10 if known("decision_maker") else 0
-    intent += 15 * sum(s in ext.signals for s in ("visit_request", "token_or_bayana", "cash_ready"))
+    intent += 15 * sum(s in ext.signals for s in ("visit_request", "cash_ready"))
+    ready_to_pay = known("ready_to_pay")          # offered a token: the strongest signal there is
+    intent += 40 if ready_to_pay else 0
     if "dealer" in ext.signals:
         intent -= 20
     fit, intent = max(0, min(100, fit)), max(0, min(100, intent))
     if "dealer" in ext.signals:
         priority = "junk"
-    elif intent >= 60 and fit >= 50:
+    elif ready_to_pay or (intent >= 60 and fit >= 50):
         priority = "hot"
     elif intent >= 60:
         priority = "redirect"
@@ -128,7 +154,11 @@ def score(slots: dict, ext: Extraction, stock_matches: int | None) -> dict:
 
 def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None) -> Plan:
     p = Plan()
-    p.slot_updates = merge_slots(state.slots, ext)
+    p.slot_updates = merge_slots(state.slots, ext, p.ignored_slots)
+    # A token offer is a fact about the buyer, not just this message: remembered,
+    # so the lead stays hot on the next turn too.
+    if "token_or_bayana" in ext.signals:
+        p.slot_updates["ready_to_pay"] = {"value": True, "source": "stated", "confidence": 1.0}
     slots = {**state.slots, **p.slot_updates}
     p.returning = (state.hours_since_last_message or 0) >= RETURNING_AFTER_HOURS
     p.greet = state.hours_since_last_message is None or any(i.type == "greeting" for i in ext.intents)
@@ -149,14 +179,15 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
                                "was": known.price_shown, "now": known.price_now})
 
     # --- which listing(s) they mean -----------------------------------------
-    listing_intents = {"listing_question", "availability", "photos", "video"}
+    # Words that are the place they named this turn are that place, not a listing.
+    place_said = {_words(u.said) for u in ext.slot_updates if u.slot in ("location_id", "location_text") and u.said}
     for intent in ext.intents:
         if intent.listing and intent.listing.zameen_id:
             p.listing_refs.append({"zameen_id": intent.listing.zameen_id})
-        elif intent.listing and intent.listing.from_history:
+        elif intent.listing and intent.listing.from_history and _words(intent.listing.from_history) not in place_said:
             p.listing_refs.append({"history": intent.listing.from_history})
     # "photos bhejo" next to a link means that link, not the last listing discussed.
-    if not p.listing_refs and state.listings and any(i.type in listing_intents for i in ext.intents):
+    if not p.listing_refs and state.listings and any(i.type in LISTING_INTENTS for i in ext.intents):
         p.listing_refs.append({"current": True})
     p.listing_refs = [dict(t) for t in {tuple(sorted(r.items())) for r in p.listing_refs}]
     p.want_photos = "photos" in types
@@ -166,7 +197,9 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
     # --- searching ---------------------------------------------------------
     wants_search = bool(types & {"search", "more_options"}) or (
         not p.listing_refs and any(k in p.slot_updates for k in
-                                   ("location_id", "budget_max", "property_types", "bedrooms_min")))
+                                   ("location_id", "budget_max", "property_types", "bedrooms_min"))) or (
+        # They answered our "which place?": show them what is there.
+        "location_id" in p.slot_updates and "location_id" in state.open_questions)
     if wants_search and _known(slots, "purpose"):
         p.search = {
             "purpose": slots["purpose"]["value"],
@@ -196,6 +229,9 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
                 target["location_id"] = None
     elif "location_id" in p.slot_updates and "location_text" in state.slots:
         p.clear_slots.append("location_text")
+    if "location_id" in p.slot_updates:
+        # The buyer's own words for the place, so code can check the model's pick.
+        p.place_words = next((u.said for u in ext.slot_updates if u.slot == "location_id" and u.said), None)
 
     # --- scores and handoff -------------------------------------------------
     apply_scores(p, state, ext, stock_matches)
@@ -227,10 +263,24 @@ def apply_scores(p: Plan, state: LeadState, ext: Extraction, stock_matches: int 
     if p.scores["priority"] == "hot" and state.handoff_state == "none":
         reasons.append("hot_lead")
     if reasons and state.handoff_state != "taken":
-        p.handoff = {"reason": sorted(set(reasons))[0], "reasons": sorted(set(reasons)),
+        ordered = sorted(set(reasons), key=_handoff_rank)
+        p.handoff = {"reason": ordered[0], "reasons": ordered,
                      "open_items": [i.question for i in ext.intents
                                     if i.type in HANDOFF_INTENTS and i.question]}
         p.ask = None
+
+
+def _handoff_rank(reason: str) -> int:
+    return HANDOFF_ORDER.index(reason) if reason in HANDOFF_ORDER else len(HANDOFF_ORDER)
+
+
+def after_tools(p: Plan, *, unclear_listing: bool, unclear_place: bool = False) -> None:
+    """The buyer meant a listing or a place we cannot pin down: the one question
+    is 'which one?' (a guess would answer about the wrong house or area)."""
+    if unclear_listing:
+        p.ask = "which_listing"
+    elif unclear_place:
+        p.ask = "which_place"
 
 
 def add_unanswered(p: Plan, state: LeadState, unanswered: list[str]) -> None:
@@ -240,6 +290,10 @@ def add_unanswered(p: Plan, state: LeadState, unanswered: list[str]) -> None:
     if p.handoff is None:
         p.handoff = {"reason": "not_in_data", "reasons": ["not_in_data"], "open_items": []}
     p.handoff["open_items"] = list(dict.fromkeys([*p.handoff["open_items"], *unanswered]))
+
+
+def _words(text: str) -> str:
+    return " ".join("".join(c if c.isalnum() else " " for c in text.lower()).split())
 
 
 def _as_list(value) -> list[str]:

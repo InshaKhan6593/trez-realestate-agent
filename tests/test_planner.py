@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from agent.planner import KnownListing, LeadState, merge_slots, plan, score
+from agent.planner import KnownListing, LeadState, after_tools, merge_slots, plan, score
 from agent.schemas import Extraction, Intent, ListingRef, SlotUpdate
 
 NOW = datetime(2026, 10, 6, tzinfo=timezone.utc)
@@ -146,6 +146,58 @@ def test_hot_lead_from_facts_not_vibes():
     assert s == {"fit": 100, "intent": 60, "priority": "hot"}
     p = plan(LeadState(1, slots=slots), ext("search"), stock_matches=5)
     assert p.handoff["reason"] == "hot_lead"
+
+
+def test_a_token_offer_is_hot_and_remembered():
+    # "8 crore final karein to aaj token de dun": warm by points alone, but money is on the table.
+    slots = {"purpose": stated("sale"), "budget_max": stated(85_000_000)}
+    known = KnownListing(35, 52735413, "inquired", 80_000_000, "available", 80_000_000, "available")
+    p = plan(LeadState(1, slots=slots, listings=[known]),
+             ext("negotiation", "ask_human", signals=["token_or_bayana"]))
+    assert p.slot_updates["ready_to_pay"]["value"] is True
+    assert p.scores["priority"] == "hot"
+    # The agent reads the strongest reason first, not the alphabetically first one.
+    assert p.handoff["reasons"] == ["ready_to_pay", "negotiation", "asked_for_human", "hot_lead"]
+    # Next turn, no signal in the message: still hot, because it was remembered.
+    later = plan(LeadState(1, slots={**slots, "ready_to_pay": stated(True)}), ext("thanks"))
+    assert later.scores["priority"] == "hot"
+
+
+def test_price_talk_without_a_reference_means_the_listing_being_discussed():
+    known = KnownListing(35, 52735413, "inquired", 80_000_000, "available", 80_000_000, "available")
+    p = plan(LeadState(1, listings=[known]), ext("negotiation"))
+    assert p.listing_refs == [{"current": True}]
+
+
+def test_answering_which_place_shows_what_is_there():
+    # Live run: to "Emaar Panorama or Emaar The Views?" the buyer said "Emaar Panorama";
+    # the model also read it as a listing ("from_history"), which blocked the search.
+    state = LeadState(1, slots={"purpose": stated("sale"), "property_types": stated(["flat"])},
+                      open_questions=["location_id"])
+    e = Extraction(language="english", intents=[Intent(type="listing_question",
+                                                       listing=ListingRef(from_history="Emaar Panorama"))],
+                   slot_updates=[SlotUpdate(slot="location_id", value=17182, said="Emaar Panorama",
+                                            source="stated", confidence=1.0)])
+    p = plan(state, e)
+    assert p.listing_refs == []                         # the place, not a listing
+    assert p.search is not None and p.search["location_id"] == 17182
+
+
+def test_an_unclear_listing_makes_the_question_which_one():
+    p = plan(LeadState(1, slots={"purpose": stated("sale")}), ext({"type": "listing_question",
+                                                                   "listing": {"from_history": "wo wala"}}))
+    assert p.ask == "location_id"
+    after_tools(p, unclear_listing=True)
+    assert p.ask == "which_listing"
+
+
+def test_a_value_outside_a_slots_choices_is_not_stored():
+    # Live run: "main dealer hoon" came back as decision_maker = "dealer".
+    p = plan(LeadState(1), ext("more_options", slots=[("decision_maker", "dealer", "stated", 1.0),
+                                                      ("timeline", "1_3_months", "stated", 1.0)],
+                               signals=["dealer"]))
+    assert "decision_maker" not in p.slot_updates and p.slot_updates["timeline"]["value"] == "1_3_months"
+    assert p.ignored_slots == [{"slot": "decision_maker", "value": "dealer"}]
 
 
 def test_dealer_is_junk():

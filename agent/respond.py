@@ -27,6 +27,15 @@ ASK_HINTS = {
     "timeline": "when they are looking to buy or move",
     "payment_mode": "whether they will pay cash or in installments",
     "decision_maker": "whether anyone else (family) will decide with them",
+    "which_listing": "which of the listings in which_listing_do_they_mean they mean (name each briefly)",
+    "which_place": "which of the places in FACTS.place.options they mean (name each)",
+}
+
+REPLY_IN = {
+    "roman_urdu": "Roman Urdu (Urdu written in English letters, like the buyer)",
+    "urdu": "Urdu script",
+    "english": "English",
+    "mixed": "the buyer's own mix of Roman Urdu and English",
 }
 
 SYSTEM = """You are the WhatsApp assistant of Trez Enterprises, a real estate agency in Karachi.
@@ -42,13 +51,16 @@ Hard rules:
    will confirm, and put that question in "unanswered". "Not mentioned" never means "no".
 4. Never negotiate, never hint at a discount, never promise anything. On price talk say only
    the listed price and that our agent will discuss the price with them: never say the price
-   is fixed, final, negotiable or that no discount is possible.
-5. Reply in the buyer's language and style: roman_urdu -> Roman Urdu, urdu -> Urdu script,
-   english -> English, mixed -> follow the buyer.
+   is fixed, final, negotiable or that no discount is possible. You may repeat the buyer's own
+   offer back to them ("aap ka offer agent tak pohanch jayega"), never accept or judge it.
+5. Write the whole reply in REPLY_IN (an English-speaking buyer gets English, greeting included).
 6. Order: first every item in MUST, then answer the buyer's questions, then at most ONE
-   question (only the one in ASK, if any). Never ask more than one question.
+   question: only the one in ASK. If ASK is null, ask no question at all (no "visit karna
+   chahenge?", no "aur kuch?").
 7. Keep it short and natural for WhatsApp (about 40-90 words; up to 3 listings as short
-   lines with title, size, price and area). Plain text, *bold* allowed, no headings.
+   lines with title, size, price and area). Plain text; WhatsApp bold (a title between
+   asterisks) is allowed; no headings, no sign-off or filler lines ("Trez Enterprises aapki
+   madad karega").
 8. Only say Trez has or does not have listings somewhere if FACTS say so: SEARCH (with
    prices) or STOCK_PREVIEW (counts only, when the buyer has not said buy or rent yet). With
    neither, do not claim anything about stock. If SEARCH found nothing in the asked place,
@@ -61,26 +73,34 @@ Hard rules:
 11. Never promise an action that is not in this prompt: photos/video only if MEDIA is set;
     "our agent will contact/confirm/discuss" only if HANDOFF is set, or for a question you put
     in "unanswered", or for an "unverified" listing. If they asked for photos and MEDIA is not
-    set, say the photos are not available right now.
+    set, say the photos are not available right now. Do not mention photos or videos unless
+    they asked or MEDIA is set.
 12. Greet (salam / hello) only if GREET is true; otherwise start directly with the answer.
 13. Refer to a listing by its title, area or Zameen number (zameen_id), never by listing_id
     (listing_id is internal, only for the JSON fields).
+14. "which_listing_do_they_mean" means they referred to a listing but it is not clear which:
+    do not answer about any one of them; ask which one they mean (that is the ASK).
 
 Return JSON: {"reply": "...", "listing_ids_mentioned": [...], "says_available": [...],
-"unanswered": [...], "claims_no_listings": false, "promises_agent_contact": false}
-using the listing_id numbers from FACTS. Set "promises_agent_contact" true whenever the reply
-says our agent will contact them, call them, confirm or discuss something."""
+"unanswered": [...], "claims_no_listings": false, "promises_agent_contact": false,
+"promises_media": false, "says_no_photos": false}
+using the listing_id numbers from FACTS. "listing_ids_mentioned" in the order the reply names
+them. Set "promises_agent_contact" true whenever the reply says our agent will contact them,
+call them, confirm or discuss something; "promises_media" true whenever it says photos or a
+video are coming; "says_no_photos" true whenever it says photos are not available."""
 
 
 class ReplyDraft(BaseModel):
     reply: str
-    listing_ids_mentioned: list[int] = Field(default_factory=list)
+    listing_ids_mentioned: list[int] = Field(default_factory=list, description="in the order the reply names them")
     says_available: list[int] = Field(default_factory=list,
                                       description="listing_ids the reply calls available")
     unanswered: list[str] = Field(default_factory=list,
                                   description="buyer questions the FACTS could not answer")
     claims_no_listings: bool = Field(False, description="the reply says Trez has nothing of a kind/somewhere")
     promises_agent_contact: bool = Field(False, description="the reply says our agent will contact/confirm")
+    promises_media: bool = Field(False, description="the reply says photos/a video are coming")
+    says_no_photos: bool = Field(False, description="the reply says photos are not available")
 
 
 def _listing_fact(l: dict) -> dict:
@@ -107,7 +127,7 @@ def build_prompt(plan: Plan, facts: Facts, burst: list[dict], recent: list[dict]
                  language: str, name: str | None) -> list[dict]:
     payload = {
         "BUYER_NAME": name,
-        "LANGUAGE": language,
+        "REPLY_IN": REPLY_IN.get(language, "the buyer's own language"),
         "EARLIER_CONVERSATION": recent[-8:],
         "BUYER_MESSAGES_NOW": [m["text"] or f"[{m['type']}]" for m in burst],
         "MUST": [_must_text(m, facts) for m in plan.must],

@@ -115,6 +115,12 @@ async def release_turn(conn: AsyncConnection, turn_id: int) -> None:
         )
 
 
+async def set_trace(conn: AsyncConnection, turn_id: int, trace_id: str | None) -> None:
+    """Remember the turn's Langfuse trace (None when tracing is off)."""
+    if trace_id:
+        await conn.execute("UPDATE turns SET langfuse_trace_id = %s WHERE id = %s", (trace_id, turn_id))
+
+
 async def finish_turn(conn: AsyncConnection, turn_id: int, status: str, *,
                       reply: str | None = None, error: str | None = None,
                       latency_ms: int | None = None) -> None:

@@ -6,28 +6,39 @@ facts are checked, not style:
 - only listings the tools call "available" are called available
 - every MUST item's listing is mentioned
 - "we have nothing" only when a search or the stock preview found nothing
+- "our agent will..." only when the agent is involved; photos "coming" only when
+  they are being sent, "no photos" only when the listing has none
 - at most one question
 Fail -> one regeneration with the problems listed -> fail again -> template.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .money import amounts_in, pkr, same_amount
 from .planner import Plan
 from .respond import ReplyDraft
 from .runner import Facts
 
+INTERNAL_FIELDS = ("listing_ids_mentioned", "says_available", "promises_agent_contact", '"reply"')
+# The word the buyer reads when the agent is brought in (Roman Urdu/English, Urdu script).
+AGENT_WORDS = ("agent", "ایجنٹ")
+
 
 def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int]) -> list[str]:
     problems: list[str] = []
-    allowed = facts.allowed_prices | buyer_amounts
+    # The model's own JSON pasted into the message (live run: 'Filename: data.json {"reply": ...').
+    if any(f in draft.reply for f in INTERNAL_FIELDS):
+        problems.append("the reply contains the JSON answer itself; write only the WhatsApp message in \"reply\"")
+    # A MUST item tells the model to state these (e.g. the old and the new price).
+    must_prices = {m[k] for m in plan.must for k in ("was", "now") if isinstance(m.get(k), int)}
+    allowed = facts.allowed_prices | buyer_amounts | must_prices
     for amount in amounts_in(draft.reply):
         if not any(same_amount(amount, a) for a in allowed):
             problems.append(f"the reply states {pkr(amount)}, which is not in the facts")
 
-    availability = {l["listing_id"]: l["availability"] for l in facts.listings.values()}
-    for r in (facts.search or {}).get("results", []):
-        availability[r["listing_id"]] = r["availability"]
+    availability = facts.availability()
     for listing_id in draft.says_available:
         if availability.get(listing_id) != "available":
             problems.append(f"listing {listing_id} is called available but is "
@@ -52,17 +63,41 @@ def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int]) 
         l["availability"] == "unverified" for l in facts.listings.values())
     if draft.promises_agent_contact and not agent_involved:
         problems.append("the reply says our agent will contact them, but no handoff was made")
+    elif not agent_involved and any(w in draft.reply.lower() for w in AGENT_WORDS):
+        # Said but not declared (live run: "Agent aapko guide kar dega" with no handoff).
+        problems.append("the reply brings in our agent, but no handoff was made; do not mention the agent")
+
+    # Photos and videos: only what is actually being sent, and never "none" when we have them.
+    sending = facts.media is not None and (facts.media["photo_count"] or facts.media["video_urls"])
+    if draft.promises_media and not sending:
+        problems.append("the reply says photos or a video are coming, but none are being sent")
+    with_photos = [l for l in facts.listings.values() if l.get("photo_count")]
+    if draft.says_no_photos and with_photos:
+        problems.append(f"the reply says photos are not available, but listing "
+                        f"{with_photos[0]['listing_id']} has {with_photos[0]['photo_count']} photos")
 
     questions = draft.reply.count("?") + draft.reply.count("؟")
     if questions > 1:
         problems.append(f"the reply asks {questions} questions; at most one is allowed")
+    elif questions and plan.ask is None:
+        # Live run: "Kya aap isay visit karna chahenge?" when nothing was to be asked.
+        problems.append("the reply asks a question, but no question was planned; ask nothing")
     if not draft.reply.strip():
         problems.append("the reply is empty")
     return problems
 
 
-def template(plan: Plan, facts: Facts, language: str) -> str:
-    """A safe reply built from facts alone, when the model fails twice."""
+@dataclass
+class Template:
+    text: str
+    listing_ids: list[int]          # listings it names, in order (remembered like a model reply's)
+    needs_agent: bool               # it had nothing safe to say: the agent must answer
+
+
+def template(plan: Plan, facts: Facts, language: str) -> Template:
+    """A safe reply built from facts alone, when the model fails twice. Never
+    empty: with no facts to give, it says the agent will reply, and the caller
+    hands the message to the agent so that is true."""
     urdu = language != "english"
     lines: list[str] = []
     for must in plan.must:
@@ -76,10 +111,20 @@ def template(plan: Plan, facts: Facts, language: str) -> str:
         place = facts.location["text"]
         lines.append(f"{place} mein abhi hamare paas listings nahi hain." if urdu
                      else f"We have no listings in {place} right now.")
-    shown = list(facts.listings.values())[:2] or (facts.search or {}).get("results", [])[:3]
+    elif facts.location is not None and facts.location["status"] == "ask":
+        names = " / ".join(o["name"] for o in facts.location["options"])
+        lines.append(f"Aap kaun si jagah ki baat kar rahe hain: {names}?" if urdu
+                     else f"Which one do you mean: {names}?")
+    shown = (list(facts.listings.values())[:2] or (facts.search or {}).get("results", [])[:3]
+             or facts.candidates[:3])
     for l in shown:
         size = f", {l['size_sqyd']:g} sq yd" if l.get("size_sqyd") else ""
-        lines.append(f"• {l['title']}{size}, {pkr(l['price_pkr'])}, {l['location'].split(',')[0]}")
-    if plan.handoff:
+        place = f", {l['location'].split(',')[0]}" if l.get("location") else ""
+        lines.append(f"• {l['title']}{size}, {pkr(l['price_pkr'])}{place}")
+    if not facts.listings and not facts.search and facts.candidates:
+        lines.append("Aap in mein se kaun si listing ke baare mein pooch rahe hain?" if urdu
+                     else "Which of these listings do you mean?")
+    needs_agent = not lines
+    if plan.handoff or needs_agent:
         lines.append("Hamare agent jald aap se rabta karenge." if urdu else "Our agent will contact you shortly.")
-    return "\n".join(lines)
+    return Template("\n".join(lines), [l["listing_id"] for l in shown], needs_agent)
