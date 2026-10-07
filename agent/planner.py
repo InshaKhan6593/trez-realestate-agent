@@ -92,6 +92,7 @@ class Plan:
     scores: dict = field(default_factory=dict)
     returning: bool = False
     greet: bool = False                                      # first contact, or they greeted
+    introduce: bool = False                                  # their first message to us: say who we are
 
 
 def _known(slots: dict, name: str) -> bool:
@@ -175,6 +176,9 @@ def plan(state: LeadState, ext: Extraction, *, stock_matches: int | None = None)
     slots = {**state.slots, **p.slot_updates}
     p.returning = (state.hours_since_last_message or 0) >= RETURNING_AFTER_HOURS
     p.greet = state.hours_since_last_message is None or any(i.type == "greeting" for i in ext.intents)
+    # No earlier message from or to them: the bot says who it is (live: a new buyer's "Hi" got
+    # "buy or rent?" with no word on who was answering).
+    p.introduce = state.hours_since_last_message is None
 
     # --- what changed since we last told them (§9, report first) ----------
     if p.returning:

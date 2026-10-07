@@ -304,3 +304,9 @@ def test_after_two_tries_at_buy_or_rent_the_next_question_is_asked():
     # Live: after two "buy or rent?" the bot said only "Hello!" and asked nothing.
     p = plan(LeadState(1, asked={"purpose": 2}), ext("greeting"))
     assert p.ask == "location_id"
+
+
+def test_the_bot_says_who_it_is_on_a_buyers_first_message_only():
+    # Live: a new buyer's "Hi" got "buy or rent?" with no word on who was answering.
+    assert plan(LeadState(1), ext("greeting")).introduce
+    assert not plan(LeadState(1, hours_since_last_message=0.1), ext("greeting")).introduce
