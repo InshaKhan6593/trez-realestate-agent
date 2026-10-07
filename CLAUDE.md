@@ -11,7 +11,7 @@ and hands leads to the human agent with full context. Their inventory is measure
 - **Supabase** (Postgres + Storage), **Redis** (locks, debounce, queue; Railway's Redis in production, not
   Upstash: the arq worker polls ~5M commands/month, Upstash free is 500K).
 - Production (DEPLOY.md): Railway runs one Docker image as two services (webhook, worker) + Redis;
-  hosted Supabase (session pooler URL); GitHub Actions scrapes and syncs daily. Same region (Singapore).
+  hosted Supabase (transaction pooler for the app, session pooler for the nightly sync); GitHub Actions scrapes and syncs daily. Same region (Singapore).
 - **LangGraph** turn: extractor (LLM) → planner (code) → tools → responder (LLM) → validator (code).
   Graph state lives for one turn; the buyer's memory is in Postgres, never a checkpointer.
 - LLMs via **OpenRouter** (OpenAI-compatible API), not a provider SDK. Models and options come from
@@ -71,7 +71,7 @@ and hands leads to the human agent with full context. Their inventory is measure
   test message to the live webhook, turn read back (dry run until the WhatsApp token is set).
 - `supabase/`: local stack config + migrations. Photos live in the private `listing-photos` bucket.
 - `observability/`: local Langfuse (Docker) for viewing traces; secrets in git-ignored `observability/.env`.
-- `tests/`: pytest (152). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
+- `tests/`: pytest (177). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
   tests need `data/`; they skip cleanly when absent. Model calls in tests are scripted.
 - `data/`: git-ignored. `raw/<run>/` immutable snapshots, `media-store/` photos, `archive/` old snapshots.
 

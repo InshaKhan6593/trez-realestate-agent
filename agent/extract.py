@@ -53,8 +53,8 @@ Rules:
   are, even when listings we showed have the same type or area. A seller's details of their own property are
   not wants either. source "stated" if they said it, "inferred" if implied
   (confidence below 0.7 for inferred).
-  * purpose: "sale" if they say they want to buy, "rent" if they say they want to rent; only
-    when they say it: wanting a property does not by itself say which.
+  * purpose: "sale" if they say they want to buy, "rent" if they say they want to rent. Leave
+    purpose null when they do not say which; that leaves only purpose null, never the other fields.
   * location_id: the id of the matching place in PLACES (the most specific that fits; spelling,
     short forms and Roman numerals do not matter). A place not in PLACES: put their words in
     location_text and do NOT choose a broader place that merely contains it.
