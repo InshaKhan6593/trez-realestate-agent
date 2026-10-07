@@ -62,11 +62,11 @@ and hands leads to the human agent with full context. Their inventory is measure
   `trace` (Langfuse: stable step names, masking, scores; every step and tool shows its input and output).
 - `app/`: WhatsApp side. `webhook` (verify signature, store, queue, 200), `meta`, `store`, `inbox`
   (Redis debounce + per-lead lock), `turn` (one turn: run the agent, re-check, send, commit, alert),
-  `worker` (arq), `sender` (Meta send / dry run), `reply` (agent adapter), `serve` (Windows dev server).
+  `worker` (arq), `sender` (Meta send / dry run; agent alerts as an approved template when set), `reply` (agent adapter), `serve` (Windows dev server).
 - `scripts/chat.py`: talk to the agent locally as a buyer; shows what it understood, decided, checked, cost.
 - `supabase/`: local stack config + migrations. Photos live in the private `listing-photos` bucket.
 - `observability/`: local Langfuse (Docker) for viewing traces; secrets in git-ignored `observability/.env`.
-- `tests/`: pytest (145). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
+- `tests/`: pytest (150). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
   tests need `data/`; they skip cleanly when absent. Model calls in tests are scripted.
 - `data/`: git-ignored. `raw/<run>/` immutable snapshots, `media-store/` photos, `archive/` old snapshots.
 
@@ -103,5 +103,6 @@ Phase 1 scope OUT for now: visit booking, compare listings, saved searches, FAQ 
 data goes to the agent, never guessed). The location alias table is out of scope.
 
 Not done yet: real WhatsApp number (Meta token), Trez's agents in the `agents` table (handoff alerts need
-them), agent commands (`#take`, `#release`), returning-buyer episode summaries, voice notes, follow-ups,
+them), the approved alert template (`WHATSAPP_ALERT_TEMPLATE`; without it alerts reach an agent only
+inside their 24-hour window), agent commands (`#take`, `#release`), returning-buyer episode summaries, voice notes, follow-ups,
 Sheet sync, Sentry, dashboard, hosted deploy.

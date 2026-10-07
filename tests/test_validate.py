@@ -85,8 +85,19 @@ def test_photos_promised_but_not_being_sent():
     draft = ReplyDraft(reply="Photos bhej rahe hain.", promises_media=True)
     assert check(draft, Plan(), facts, set()) == [
         "the reply says photos or a video are coming, but none are being sent"]
-    facts.media = {"listing_id": 35, "photo_count": 3, "video_urls": []}
+    facts.media = {"listing_id": 35, "photo_count": 3, "photos_sending": 3, "video_urls": []}
     assert check(draft, Plan(), facts, set()) == []
+
+
+def test_the_number_of_photos_said_is_the_number_sent():
+    # Live run: "Photos 11 hain, main bhej raha hoon" while 4 (DEFAULT_PHOTOS) go out.
+    facts = Facts(listings={35: listing(35, 80_000_000, photos=11)},
+                  media={"listing_id": 35, "photo_count": 11, "photos_sending": 4, "video_urls": []})
+    wrong = ReplyDraft(reply="11 photos bhej raha hoon.", promises_media=True, photos_coming_said=11)
+    assert check(wrong, Plan(), facts, set()) == [
+        "the reply says 11 photos are being sent, but 4 are; say 4 (the listing's total may be added)"]
+    right = ReplyDraft(reply="4 photos bhej raha hoon, total 11 hain.", promises_media=True, photos_coming_said=4)
+    assert check(right, Plan(), facts, set()) == []
 
 
 def test_no_photos_said_when_the_listing_has_them():

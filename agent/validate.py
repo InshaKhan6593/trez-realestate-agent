@@ -7,7 +7,8 @@ facts are checked, not style:
 - every MUST item's listing is mentioned
 - "we have nothing" only when a search or the stock preview found nothing
 - "our agent will..." only when the agent is involved; photos "coming" only when
-  they are being sent, "no photos" only when the listing has none
+  they are being sent, and only as many as are sent; "no photos" only when the
+  listing has none
 - at most one question
 Fail -> one regeneration with the problems listed -> fail again -> template.
 """
@@ -71,6 +72,11 @@ def check(draft: ReplyDraft, plan: Plan, facts: Facts, buyer_amounts: set[int]) 
     sending = facts.media is not None and (facts.media["photo_count"] or facts.media["video_urls"])
     if draft.promises_media and not sending:
         problems.append("the reply says photos or a video are coming, but none are being sent")
+    sending_count = (facts.media or {}).get("photos_sending", 0)
+    if draft.photos_coming_said is not None and draft.photos_coming_said != sending_count:
+        # Live run: "Photos 11 hain, main bhej raha hoon" when 4 go out.
+        problems.append(f"the reply says {draft.photos_coming_said} photos are being sent, but "
+                        f"{sending_count} are; say {sending_count} (the listing's total may be added)")
     with_photos = [l for l in facts.listings.values() if l.get("photo_count")]
     if draft.says_no_photos and with_photos:
         problems.append(f"the reply says photos are not available, but listing "

@@ -9,6 +9,7 @@
                               answers everything (§5: discard draft, regenerate)
     agent took it now?     -> takeover: draft kept for the record, never sent
     send text, then media; alert the agent if a handoff was requested
+                           (a Meta template when configured: see sender.send_alert)
     commit the buyer's memory
 """
 
@@ -26,7 +27,7 @@ from agent import trace
 
 from . import inbox, store
 from .config import Settings
-from .sender import SendResult
+from .sender import SendResult, send_alert
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ TURN_STATUS = {"sent": "sent", "not_sent": "not_sent", "failed": "failed"}
 
 async def run_turn(redis: Redis, pool: AsyncConnectionPool, settings: Settings,
                    lead_id: int, seq: int, *, reply_fn: ReplyFn, send_fn: SendFn,
-                   media_fn=None) -> str:
+                   media_fn=None, alert_fn: SendFn = send_alert) -> str:
     if await inbox.current_seq(redis, lead_id) != seq:
         return "stale"
     token = await inbox.acquire_lock(redis, lead_id)
@@ -56,7 +57,8 @@ async def run_turn(redis: Redis, pool: AsyncConnectionPool, settings: Settings,
                             tags=["dry-run"] if settings.dry_run else None) as root:
                 await store.set_trace(conn, claimed.turn_id, trace.trace_id())
                 outcome = await _answer(redis, conn, settings, lead_id, seq, claimed, root,
-                                        reply_fn=reply_fn, send_fn=send_fn, media_fn=media_fn)
+                                        reply_fn=reply_fn, send_fn=send_fn, media_fn=media_fn,
+                                        alert_fn=alert_fn)
                 trace.score("outcome", outcome)
             return outcome
     finally:
@@ -64,7 +66,8 @@ async def run_turn(redis: Redis, pool: AsyncConnectionPool, settings: Settings,
 
 
 async def _answer(redis: Redis, conn: AsyncConnection, settings: Settings, lead_id: int, seq: int,
-                  claimed: store.Claimed, root, *, reply_fn: ReplyFn, send_fn: SendFn, media_fn) -> str:
+                  claimed: store.Claimed, root, *, reply_fn: ReplyFn, send_fn: SendFn, media_fn,
+                  alert_fn: SendFn) -> str:
     if claimed.agent_has_it:
         await store.finish_turn(conn, claimed.turn_id, "takeover")
         root.update(output="(bot silent: the agent is handling this chat)")
@@ -115,8 +118,11 @@ async def _answer(redis: Redis, conn: AsyncConnection, settings: Settings, lead_
     await reply.commit(conn)
     alert = getattr(reply, "alert", None)
     if alert:
-        with trace.step("alert-agent", as_type="tool", input={"to": alert["phone"], "text": alert["text"]}) as obs:
-            alert_result = await send_fn(settings, alert["phone"], alert["text"])
+        how = (f"template {settings.whatsapp_alert_template}" if settings.whatsapp_alert_template
+               else "text (delivered only inside the agent's 24-hour window)")
+        with trace.step("alert-agent", as_type="tool",
+                        input={"to": alert["phone"], "as": how, "text": alert["text"]}) as obs:
+            alert_result = await alert_fn(settings, alert["phone"], alert["text"])
             obs.update(output=_sent(alert_result))
         log.info("handoff %s alert to agent: %s", alert.get("handoff_id"), alert_result.status)
     await store.finish_turn(

@@ -55,7 +55,7 @@ cd scraper && npm ci && node scrape-zameen.mjs --output-dir ../data/raw/$(date +
 uv run python -m sync.ingest data/raw/$(date +%Y-%m-%d)
 
 uv run python -m scripts.chat              # talk to the agent as a buyer (nothing is sent on WhatsApp)
-uv run pytest                              # 145 tests
+uv run pytest                              # 150 tests
 ```
 
 Traces: Langfuse Cloud (keys and host in `.env`; this project is in the **US** region,

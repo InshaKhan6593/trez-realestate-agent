@@ -24,19 +24,21 @@ MEDIA_ID_TTL = timedelta(days=25)
 # WhatsApp image messages accept only these (WebP is for stickers), max 5 MB:
 # https://developers.facebook.com/documentation/business-messaging/whatsapp/business-phone-numbers/media
 WHATSAPP_IMAGE_TYPES = {"JPEG": "image/jpeg", "PNG": "image/png"}
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 # WhatsApp has no albums: every photo is its own message, so a few at a time.
 DEFAULT_PHOTOS = 4
 
 
 async def media_for_listing(conn: AsyncConnection, listing_id: int) -> dict:
-    """What can be sent for a listing: photo count and video links."""
+    """What can be sent for a listing: photo count, how many go out now
+    (send_listing_media sends DEFAULT_PHOTOS at a time), and video links."""
     photos = (await (await conn.execute(
         "SELECT count(*) FROM listing_media WHERE listing_id = %s", (listing_id,)
     )).fetchone())[0]
     videos = (await (await conn.execute(
         "SELECT video_urls FROM listings WHERE id = %s", (listing_id,)
     )).fetchone())
-    return {"listing_id": listing_id, "photo_count": photos,
+    return {"listing_id": listing_id, "photo_count": photos, "photos_sending": min(photos, DEFAULT_PHOTOS),
             "video_urls": list(videos[0]) if videos else []}
 
 
@@ -87,13 +89,23 @@ async def send_listing_media(conn: AsyncConnection, settings: Settings, to: str,
 
 
 def for_whatsapp(content: bytes, name: str) -> tuple[bytes, str, str]:
-    """-> (bytes, mime, file name) in a format WhatsApp accepts for images.
-    The format is read from the file itself, not from its name."""
+    """-> (bytes, mime, file name) that WhatsApp accepts as an image: JPEG or
+    PNG, at most MAX_IMAGE_BYTES. The format is read from the file itself, not
+    from its name; anything else, or anything too big, becomes a JPEG (smaller
+    quality first, then smaller size, until it fits)."""
     with Image.open(io.BytesIO(content)) as img:
-        if img.format in WHATSAPP_IMAGE_TYPES:
+        if img.format in WHATSAPP_IMAGE_TYPES and len(content) <= MAX_IMAGE_BYTES:
             return content, WHATSAPP_IMAGE_TYPES[img.format], name
-        out = io.BytesIO()
-        img.convert("RGB").save(out, "JPEG", quality=88)
+        rgb, quality = img.convert("RGB"), 88
+        while True:
+            out = io.BytesIO()
+            rgb.save(out, "JPEG", quality=quality)
+            if out.tell() <= MAX_IMAGE_BYTES:
+                break
+            if quality > 60:
+                quality -= 14
+            else:
+                rgb = rgb.resize((max(1, rgb.width * 3 // 4), max(1, rgb.height * 3 // 4)))
     return out.getvalue(), "image/jpeg", name.rsplit(".", 1)[0] + ".jpg"
 
 

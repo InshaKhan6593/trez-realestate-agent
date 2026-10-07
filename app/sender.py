@@ -52,6 +52,37 @@ async def send_text(settings: Settings, to: str, body: str, *, preview_url: bool
     return await _send(settings, to, {"type": "text", "text": {"body": body, "preview_url": preview_url}})
 
 
+async def send_template(settings: Settings, to: str, name: str, language: str, params: list[str]) -> SendResult:
+    """An approved Meta template: the only message delivered outside the 24-hour window."""
+    return await _send(settings, to, {"type": "template", "template": {
+        "name": name, "language": {"code": language},
+        "components": [{"type": "body", "parameters": [{"type": "text", "text": p} for p in params]}],
+    }})
+
+
+# Meta rejects a template parameter with newlines, tabs or 4+ spaces in a row, and
+# caps the body at 1024 characters (the template's own words included).
+TEMPLATE_PARAM_MAX = 900
+
+
+def template_param(text: str) -> str:
+    """Text made valid as one template parameter: lines joined with ' · ',
+    spaces collapsed, cut to fit (the end marked with '…')."""
+    one_line = " · ".join(" ".join(line.split()) for line in text.splitlines() if line.strip())
+    return one_line if len(one_line) <= TEMPLATE_PARAM_MAX else one_line[:TEMPLATE_PARAM_MAX - 1] + "…"
+
+
+async def send_alert(settings: Settings, to: str, text: str) -> SendResult:
+    """The alert to a human agent. It is business-initiated: outside the 24
+    hours after the agent last wrote to this number, Meta delivers only an
+    approved template. With WHATSAPP_ALERT_TEMPLATE set, the alert goes as that
+    template; without it, as plain text (delivered only inside that window)."""
+    if settings.whatsapp_alert_template:
+        return await send_template(settings, to, settings.whatsapp_alert_template,
+                                   settings.whatsapp_alert_template_language, [template_param(text)])
+    return await send_text(settings, to, text)
+
+
 async def send_image(settings: Settings, to: str, media_id: str, caption: str | None = None) -> SendResult:
     image = {"id": media_id}
     if caption:
