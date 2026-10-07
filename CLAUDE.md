@@ -8,7 +8,10 @@ and hands leads to the human agent with full context. Their inventory is measure
 
 ## Decisions already made (don't re-argue these without a reason)
 - Python **FastAPI** + **arq** worker on an always-on ~$5/mo host. **Not** on Vercel serverless.
-- **Supabase** (Postgres + Storage), **Redis** (locks, debounce, queue; Upstash in production).
+- **Supabase** (Postgres + Storage), **Redis** (locks, debounce, queue; Railway's Redis in production, not
+  Upstash: the arq worker polls ~5M commands/month, Upstash free is 500K).
+- Production (DEPLOY.md): Railway runs one Docker image as two services (webhook, worker) + Redis;
+  hosted Supabase (session pooler URL); GitHub Actions scrapes and syncs daily. Same region (Singapore).
 - **LangGraph** turn: extractor (LLM) → planner (code) → tools → responder (LLM) → validator (code).
   Graph state lives for one turn; the buyer's memory is in Postgres, never a checkpointer.
 - LLMs via **OpenRouter** (OpenAI-compatible API), not a provider SDK. Models and options come from
@@ -62,11 +65,12 @@ and hands leads to the human agent with full context. Their inventory is measure
   `trace` (Langfuse: stable step names, masking, scores; every step and tool shows its input and output).
 - `app/`: WhatsApp side. `webhook` (verify signature, store, queue, 200), `meta`, `store`, `inbox`
   (Redis debounce + per-lead lock), `turn` (one turn: run the agent, re-check, send, commit, alert),
-  `worker` (arq), `sender` (Meta send / dry run; agent alerts as an approved template when set), `reply` (agent adapter), `serve` (Windows dev server).
+  `worker` (arq), `errors` (Sentry, phones masked), `sender` (Meta send / dry run; agent alerts as an approved template when set), `reply` (agent adapter), `serve` (Windows dev server).
 - `scripts/chat.py`: talk to the agent locally as a buyer; shows what it understood, decided, checked, cost.
+- `Dockerfile`, `deploy/railway.*.json`, `.github/workflows/sync-listings.yml`: production (DEPLOY.md).
 - `supabase/`: local stack config + migrations. Photos live in the private `listing-photos` bucket.
 - `observability/`: local Langfuse (Docker) for viewing traces; secrets in git-ignored `observability/.env`.
-- `tests/`: pytest (150). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
+- `tests/`: pytest (152). Pure tests always run; DB/Redis tests need the local stack, real-snapshot
   tests need `data/`; they skip cleanly when absent. Model calls in tests are scripted.
 - `data/`: git-ignored. `raw/<run>/` immutable snapshots, `media-store/` photos, `archive/` old snapshots.
 
@@ -105,4 +109,4 @@ data goes to the agent, never guessed). The location alias table is out of scope
 Not done yet: real WhatsApp number (Meta token), Trez's agents in the `agents` table (handoff alerts need
 them), the approved alert template (`WHATSAPP_ALERT_TEMPLATE`; without it alerts reach an agent only
 inside their 24-hour window), agent commands (`#take`, `#release`), returning-buyer episode summaries, voice notes, follow-ups,
-Sheet sync, Sentry, dashboard, hosted deploy.
+Sheet sync, dashboard. Deploy is prepared (DEPLOY.md) but not done: needs the Supabase and Railway accounts.

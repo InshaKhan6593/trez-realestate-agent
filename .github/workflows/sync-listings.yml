@@ -1,0 +1,102 @@
+# Daily: scrape Trez's own Zameen listings, validate, load into hosted Supabase.
+# Keeps every listing "verified" (a listing not seen for 7 days becomes
+# "unverified" and the bot stops calling it available). See DEPLOY.md.
+#
+# Secrets (repo Settings > Secrets and variables > Actions):
+#   DATABASE_URL               hosted Supabase, session pooler URI
+#   SUPABASE_URL               https://<project-ref>.supabase.co
+#   SUPABASE_SERVICE_ROLE_KEY  service_role key (photo uploads)
+#
+# The repo is public, so its Actions logs are too: only a summary is printed.
+# If Zameen blocks or changes its page data, the scraper stops with an error
+# (never gets around a block) and this run fails; GitHub emails the owner.
+name: Daily listing sync
+
+on:
+  schedule:
+    - cron: "30 21 * * *"        # 02:30 in Karachi
+  workflow_dispatch: {}          # "Run workflow" button for a manual sync
+
+concurrency:
+  group: listing-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Off until the hosted Supabase exists: set the repository variable
+    # LISTING_SYNC_ENABLED=true (Settings > Secrets and variables > Actions > Variables).
+    if: vars.LISTING_SYNC_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: scraper/package-lock.json
+
+      - name: Install the scraper
+        working-directory: scraper
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # Photos are downloaded once and kept between runs; the last snapshots
+      # too, so the validator can warn when Zameen adds or drops a field.
+      - name: Restore photos and recent snapshots
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: zameen-data-${{ github.run_id }}
+          restore-keys: zameen-data-
+
+      - name: Scrape
+        working-directory: scraper
+        run: |
+          RUN=$(date -u +%Y-%m-%dT%H%M)
+          echo "RUN=$RUN" >> "$GITHUB_ENV"
+          node scrape-zameen.mjs --output-dir "../data/raw/$RUN" \
+            --media-store ../data/media-store --download-media > ../scrape.log 2>&1 \
+            || { tail -n 20 ../scrape.log; exit 1; }
+          tail -n 3 ../scrape.log
+
+      - name: Validate
+        working-directory: scraper
+        run: node validate-zameen-data.mjs --input-dir "../data/raw/$RUN" --require-downloaded-media | tail -n 15
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Load into Supabase
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          uv sync --frozen --no-dev
+          uv run python -m sync.ingest "data/raw/$RUN" > ingest.out
+          # Counts only (the logs are public); unmapped Zameen types are named, to be mapped.
+          uv run python - <<'PY'
+          import json
+          text = open("ingest.out").read()
+          try:
+              r = json.loads(text)
+          except ValueError:
+              print(text.strip()[:500])        # e.g. "already ingested"
+          else:
+              print({k: (len(v) if isinstance(v, (list, dict)) else v) for k, v in r.items()})
+              if r.get("unmapped_property_types"):
+                  print("::warning::Zameen types not mapped yet:", r["unmapped_property_types"])
+          PY
+
+      - name: Keep the last 3 snapshots
+        if: always()
+        run: find data/raw -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | head -n -3 | xargs -r rm -rf
+
+      - name: Save photos and recent snapshots
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: zameen-data-${{ github.run_id }}

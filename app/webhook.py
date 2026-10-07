@@ -22,6 +22,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from . import inbox, store
 from .config import get_settings
+from .errors import init_sentry
 from .meta import parse_webhook, signature_ok
 
 log = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    init_sentry("webhook")
     settings = get_settings()
     app.state.settings = settings
     app.state.db = AsyncConnectionPool(

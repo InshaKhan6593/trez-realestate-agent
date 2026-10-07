@@ -55,12 +55,15 @@ cd scraper && npm ci && node scrape-zameen.mjs --output-dir ../data/raw/$(date +
 uv run python -m sync.ingest data/raw/$(date +%Y-%m-%d)
 
 uv run python -m scripts.chat              # talk to the agent as a buyer (nothing is sent on WhatsApp)
-uv run pytest                              # 150 tests
+uv run pytest                              # 152 tests
 ```
 
 Traces: Langfuse Cloud (keys and host in `.env`; this project is in the **US** region,
 `https://us.cloud.langfuse.com`) or locally with
 `docker compose -f observability/docker-compose.yml up -d` (UI on http://localhost:3000).
+
+Production: Railway (webhook + worker + Redis), hosted Supabase, a daily GitHub Actions sync: see
+[DEPLOY.md](DEPLOY.md).
 
 Serving WhatsApp: `uv run python -m app.serve` (webhook) and `uv run arq app.worker.WorkerSettings`
 (worker). Without a WhatsApp token, replies are recorded as not sent.

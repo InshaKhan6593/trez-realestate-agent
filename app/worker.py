@@ -17,6 +17,7 @@ from agent.llm import LLM, model_for
 from agent.media import send_listing_media
 
 from .config import get_settings
+from .errors import init_sentry
 from .reply import make_reply_fn
 from .sender import send_text
 from .turn import run_turn
@@ -37,6 +38,7 @@ async def process_turn(ctx: dict, lead_id: int, seq: int) -> str:
 
 
 async def startup(ctx: dict) -> None:
+    init_sentry("worker")
     settings = get_settings()
     ctx["settings"] = settings
     # Fails at startup, not on a buyer's message, if the key or models are missing.
